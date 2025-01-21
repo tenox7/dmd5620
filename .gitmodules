@@ -1,0 +1,4 @@
+[submodule "dmd_core"]
+	path = dmd_core
+	url = https://git.loomcom.com/seth/dmd_core.git
+	branch = master
