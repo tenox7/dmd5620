@@ -1,10 +1,9 @@
 SRCDIR = src
 LIBDIR = dmd_core
-CC = gcc
 GIT = git
 CARGO = cargo
-CFLAGS = $(shell pkg-config --cflags sdl2) -Wall -std=gnu99
-GTKLIBS = $(shell pkg-config --libs sdl2)
+CFLAGS = $(shell pkg-config --cflags sdl2 SDL2_gfx) -Wall -Werror -std=gnu99
+GTKLIBS = $(shell pkg-config --libs sdl2 SDL2_gfx)
 EXE = dmd5620
 CSRC = $(wildcard src/*.c)
 OBJ = $(CSRC:.c=.o)
@@ -18,12 +17,7 @@ endif
 ifdef DEBUG
 	CFLAGS+ = -g -O0
 else
-	UNAME_S := $(shell uname -s)
-	ifeq ($(UNAME_S),Darwin)
-		CFLAGS += -O3 -Os
-	else
-		CFLAGS += -O3 -Os -s
-	endif
+	CFLAGS += -O3 -Os
 endif
 
 .PHONY: all clean
@@ -32,6 +26,8 @@ all: $(EXE)
 
 clean:
 	@rm -f $(EXE) $(OBJ)
+
+deepclean: $(clean)
 	@cd $(LIBDIR) && $(CARGO) clean
 
 $(CORELIB):
