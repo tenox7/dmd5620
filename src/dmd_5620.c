@@ -48,6 +48,10 @@
 #include "dmd_5620.h"
 #include "version.h"
 
+#define KEYSYM(e, u, s) (((e)->keysym.mod & KMOD_SHIFT) ? (s) : (u))
+#define CKEYSYM(e, u, s, c)                                                             \
+    (((e)->keysym.mod & KMOD_CTRL) ? (c) : ((e)->keysym.mod & KMOD_SHIFT) ? (s) : (u))
+
 #ifndef MIN
 #define MIN(a, b) ((a) <= (b) ? (a) : (b))
 #endif
@@ -262,13 +266,53 @@ bool sdl_init() {
 void handle_keydown_event(SDL_KeyboardEvent *event) {
     uint8_t c = 0;
     SDL_Keycode code = event->keysym.sym;
-    SDL_Keycode modified = SDL_GetKeyFromScancode(event->keysym.scancode);
-
-    LDBG("[KEYDOWN] keysym.sym: 0x%02x (%c)  |  modified: 0x%02x (%c)", code,
-         code >= 0x20 && code < 0x7f ? code : '.', modified,
-         modified >= 0x20 && modified < 0x7f ? modified : '.');
 
     switch (code) {
+    case SDLK_F1:
+        c = 0xe8;
+        break;
+    case SDLK_F2:
+        c = 0xe9;
+        break;
+    case SDLK_F3:
+        c = 0xea;
+        break;
+    case SDLK_F4:
+        c = 0xeb;
+        break;
+    case SDLK_F5:
+        c = 0xec;
+        break;
+    case SDLK_F6:
+        c = 0xed;
+        break;
+    case SDLK_F7:
+        c = 0xee;
+        break;
+    case SDLK_F8:
+        c = 0xef;
+        break;
+    case SDLK_F9:
+        c = KEYSYM(event, 0xae, 0x8e);
+        break;
+    case SDLK_ESCAPE:
+        c = 0x1b;
+        break;
+    case SDLK_DELETE:
+        c = 0xfe;
+        break;
+    case SDLK_UP:
+        c = 0xc1;
+        break;
+    case SDLK_DOWN:
+        c = 0xc2;
+        break;
+    case SDLK_RIGHT:
+        c = 0xc3;
+        break;
+    case SDLK_LEFT:
+        c = 0xc4;
+        break;
     case SDLK_BACKSPACE:
         c = 0xd1;
         break;
@@ -278,50 +322,98 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
     case SDLK_TAB:
         c = 0xd0;
         break;
-    case SDLK_SPACE:
-    case SDLK_EXCLAIM:
-    case SDLK_QUOTEDBL:
-    case SDLK_HASH:
-    case SDLK_DOLLAR:
-    case SDLK_PERCENT:
-    case SDLK_AMPERSAND:
+
+    case SDLK_BACKQUOTE:
+        c = KEYSYM(event, '`', '~');
+        break;
     case SDLK_QUOTE:
-    case SDLK_LEFTPAREN:
-    case SDLK_RIGHTPAREN:
-    case SDLK_ASTERISK:
-    case SDLK_PLUS:
-    case SDLK_COMMA:
-    case SDLK_MINUS:
-    case SDLK_PERIOD:
+        c = KEYSYM(event, '\'', '"');
+        break;
     case SDLK_SLASH:
-    case SDLK_COLON:
-    case SDLK_SEMICOLON:
-    case SDLK_LESS:
-    case SDLK_GREATER:
-    case SDLK_QUESTION:
-    case SDLK_LEFTBRACKET:
-    case SDLK_KP_VERTICALBAR:
-    case SDLK_RIGHTBRACKET:
+        c = KEYSYM(event, '/', '?');
+        break;
     case SDLK_EQUALS:
-        c = (uint8_t)(event->keysym.sym & 0xff);
+        c = KEYSYM(event, '=', '+');
+        break;
+    case SDLK_MINUS:
+        c = KEYSYM(event, '-', '_');
+        break;
+    case SDLK_LEFTBRACKET:
+        c = CKEYSYM(event, '[', '{', 0x1b);
+        break;
+    case SDLK_BACKSLASH:
+        c = CKEYSYM(event, '\\', '|', 0x1c);
+        break;
+    case SDLK_RIGHTBRACKET:
+        c = CKEYSYM(event, ']', '}', 0x1d);
+        break;
+    case SDLK_SEMICOLON:
+        c = KEYSYM(event, ';', ':');
+        break;
+    case SDLK_COMMA:
+        c = KEYSYM(event, ',', '<');
+        break;
+    case SDLK_PERIOD:
+        c = KEYSYM(event, '.', '>');
+        break;
+    case SDLK_SPACE:
+        c = ' ';
         break;
 
+    /* We should have handled these already on a standard US keyboard, but
+     * just in case... */
+    case SDLK_QUESTION:
+        c = '?';
+        break;
+    case SDLK_PLUS:
+        c = '+';
+        break;
+    case SDLK_UNDERSCORE:
+        c = '_';
+        break;
+    case SDLK_COLON:
+        c = ':';
+        break;
+    case SDLK_LESS:
+        c = '<';
+        break;
+    case SDLK_GREATER:
+        c = '>';
+        break;
+
+    /* Another US-specific config, sigh. */
     case SDLK_1:
+        c = KEYSYM(event, '1', '!');
+        break;
     case SDLK_2:
+        c = KEYSYM(event, '2', '@');
+        break;
     case SDLK_3:
+        c = KEYSYM(event, '3', '#');
+        break;
     case SDLK_4:
+        c = KEYSYM(event, '4', '$');
+        break;
     case SDLK_5:
+        c = KEYSYM(event, '5', '%');
+        break;
     case SDLK_6:
+        c = KEYSYM(event, '6', '^');
+        break;
     case SDLK_7:
+        c = KEYSYM(event, '7', '&');
+        break;
     case SDLK_8:
+        c = KEYSYM(event, '8', '*');
+        break;
     case SDLK_9:
+        c = KEYSYM(event, '9', '(');
+        break;
     case SDLK_0:
-        c = (uint8_t)(event->keysym.sym & 0xff);
-        if (event->keysym.mod & KMOD_SHIFT) {
-            c = c - 0x10;
-        }
+        c = KEYSYM(event, '0', ')');
         break;
 
+    /* Just the alphabet */
     case SDLK_a:
     case SDLK_b:
     case SDLK_c:
@@ -348,18 +440,16 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
     case SDLK_x:
     case SDLK_y:
     case SDLK_z:
-        c = (uint8_t)(event->keysym.sym & 0xff);
-        if (event->keysym.mod & KMOD_CTRL) {
-            c = c & 0x0f;
-        } else if (event->keysym.mod & KMOD_SHIFT) {
-            c = c & 0xdf;
-        }
+        c = event->keysym.sym;
+        c = CKEYSYM(event, c, c & 0xdf, c & 0x1f);
         break;
     default:
         return;
     }
 
-    LDBG("KEY PRESS: 0x%02x (%c)", c, c >= 0x20 && c < 0x7f ? c : '.');
+    LDBG("[KEYDOWN] keysym.sym: 0x%02x (%c)  |  modified: 0x%02x (%c)", code,
+         code >= 0x20 && code < 0x7f ? code : '.', c,
+         c >= 0x20 && c < 0x7f ? c : '.');
 
     dmd_keyboard_rx(c);
 }
@@ -374,7 +464,7 @@ void sdl_main_loop() {
     size_t steps;
 
     SDL_initFramerate(&fpsmanager);
-    SDL_setFramerate(&fpsmanager, 30);
+    SDL_setFramerate(&fpsmanager, 60);
 
     /* Clear pixels */
     SDL_FillRect(sdl_pixel_surface, NULL, 0);
@@ -441,11 +531,11 @@ void sdl_main_loop() {
                     }
                 }
             }
-        }
 
-        SDL_UnlockSurface(sdl_pixel_surface);
-        SDL_BlitSurface(sdl_pixel_surface, NULL, sdl_window_surface, NULL);
-        SDL_UpdateWindowSurface(sdl_window);
+            SDL_UnlockSurface(sdl_pixel_surface);
+            SDL_BlitSurface(sdl_pixel_surface, NULL, sdl_window_surface, NULL);
+            SDL_UpdateWindowSurface(sdl_window);
+        }
 
         /* Execute the simulator */
         pty_io_poll();
@@ -469,10 +559,14 @@ void sdl_main_loop() {
             return;
         }
 
+        /* We take 7200 simulated steps per millisecond of wall clock
+         * time, based on a 7.2 MHz WE 32100 CPU.
+         */
         delta = ticks - previous_ticks;
-        steps = MIN((size_t)(7.2 * delta), MAX_STEPS);
+        steps = MIN((size_t)(7200 * delta), MAX_STEPS);
+        previous_ticks = ticks;
 
-        LDBG("[MAIN LOOP] executing %lu steps in %lu us. rate ~= %.2f MHz", steps, delta,
+        LDBG("[MAIN LOOP] executing %lu steps in %lu ms. rate ~= %.2f MHz", steps, delta,
              (float)steps / (float)delta);
 
         dmd_step_loop(steps);
