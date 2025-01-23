@@ -27,7 +27,13 @@
 #include <errno.h>
 #include <getopt.h>
 #include <poll.h>
+#if defined __APPLE__
+#include <sys/ioctl.h>
+#include <sys/resource.h>
+#include <util.h>
+#else
 #include <pty.h>
+#endif
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -42,8 +48,20 @@
 #include "dmd_5620.h"
 #include "version.h"
 
+#ifndef MIN
+#define MIN(a, b) ((a) <= (b) ? (a) : (b))
+#endif
+
+#define LDBG(f, ...)                                                                    \
+    do {                                                                                \
+        if (debug_log)                                                                  \
+            fprintf(stdout, ("[DEBUG] " f "\n")__VA_OPT__(, ) __VA_ARGS__);             \
+    } while (0)
+#define LERR(f, ...) fprintf(stderr, ("[ERROR] " f "\n")__VA_OPT__(, ) __VA_ARGS__)
+
 const char *FIRMWARE_873 = "8;7;3";
 const char *FIRMWARE_875 = "8;7;5";
+const size_t MAX_STEPS = 350000;
 
 SDL_Window *sdl_window = NULL;
 SDL_Surface *sdl_window_surface = NULL;
@@ -52,14 +70,16 @@ SDL_Surface *sdl_pixel_surface = NULL;
 char VERSION_STRING[64];
 int pty_master, pty_slave;
 int sigint_count = 0;
+Uint64 previous_ticks = 0;
 pid_t shell_pid;
 struct pollfd fds[2];
+bool debug_log;
 
 volatile bool running = true;
 
 void int_handler(int signal) {
     if (sigint_count) {
-        fprintf(stderr, "Shutting down immediately. Good bye.\n");
+        LERR("Shutting down immediately. Good bye.");
         exit(1);
     }
 
@@ -127,15 +147,16 @@ void pty_init(const char *shell, char *envp[]) {
     close(pty_slave);
 }
 
-struct option long_options[] = {{"help", no_argument, 0, 'h'},
-                                {"version", no_argument, 0, 'v'},
-                                {"inherit", no_argument, 0, 'i'},
-                                {"firmware", required_argument, 0, 'f'},
-                                {"shell", required_argument, 0, 's'},
-                                {"device", required_argument, 0, 'd'},
-                                {"nvram", required_argument, 0, 'n'},
-                                {"debug", no_argument, 0, 'b'}, /* Hidden and undocumented */
-                                {0, 0, 0, 0}};
+struct option long_options[] = {
+    {"help", no_argument, 0, 'h'},
+    {"version", no_argument, 0, 'v'},
+    {"inherit", no_argument, 0, 'i'},
+    {"firmware", required_argument, 0, 'f'},
+    {"shell", required_argument, 0, 's'},
+    {"device", required_argument, 0, 'd'},
+    {"nvram", required_argument, 0, 'n'},
+    {"debug", no_argument, 0, 'b'}, /* Hidden and undocumented */
+    {0, 0, 0, 0}};
 
 void usage() {
     printf("Usage: dmd5620 [-h] [-v] [-i] [-f VER] [-n FILE] -s SHELL|-d DEV\n");
@@ -176,7 +197,7 @@ void pty_io_poll() {
     i = 0;
     while (dmd_rs232_tx(&txc) == 0) {
         if (write(pty_master, &txc, 1) < 0) {
-            fprintf(stderr, "Error %d from write: %s\n", errno, strerror(errno));
+            LERR("Error %d from write: %s\n", errno, strerror(errno));
         }
     }
 }
@@ -185,41 +206,69 @@ void pty_io_poll() {
  * Initialize the SDL system and get the window, surface, and renderer.
  */
 bool sdl_init() {
-    // Initialize audio (for keyboard beeps), video, and event handling
+    /* Initialize audio (for keyboard beeps), video, and event handling */
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
-        fprintf(stderr, "Error initializing SDL: %s\n", SDL_GetError());
+        LERR("Error initializing SDL: %s", SDL_GetError());
         return false;
     }
 
-    sdl_window = SDL_CreateWindow("DMD 5620", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, WIDTH, HEIGHT,
-                                  SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
+    sdl_window =
+        SDL_CreateWindow("DMD 5620", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                         WIDTH, HEIGHT, SDL_WINDOW_SHOWN);
 
     if (!sdl_window) {
-        fprintf(stderr, "Error creating window: %s\n", SDL_GetError());
+        LERR("Error creating window: %s", SDL_GetError());
         return false;
     }
 
     sdl_window_surface = SDL_GetWindowSurface(sdl_window);
 
     if (!sdl_window_surface) {
-        fprintf(stderr, "Error getting window surface: %s\n", SDL_GetError());
+        LERR("Error getting window surface: %s", SDL_GetError());
         return false;
     }
 
-    sdl_pixel_surface = SDL_CreateRGBSurfaceWithFormat(0, WIDTH, HEIGHT, 32, SDL_PIXELFORMAT_RGBA8888);
+    sdl_pixel_surface =
+        SDL_CreateRGBSurfaceWithFormat(0, WIDTH, HEIGHT, 32, SDL_PIXELFORMAT_RGBA8888);
 
     if (!sdl_pixel_surface) {
-        fprintf(stderr, "Error getting pixel surface: %s\n", SDL_GetError());
+        LERR("Error getting pixel surface: %s", SDL_GetError());
         return false;
     }
+
+    /* Record starting time */
+    previous_ticks = SDL_GetTicks64();
+    LDBG("[INIT] previous_ticks = %lu", previous_ticks);
 
     return true;
 }
 
+/*
+ * TODO: Support keyboard layouts other than US English!!!
+ *
+ * This is really ugly at the moment... We really need a way to detect
+ * keyboard layouts. Here in the US, my keyboard has "@" as "2"+"SHIFT",
+ * "<" as "."+"SHIFT", ">" as ","+"SHIFT", but that will NOT be true on
+ * all layouts. For example, French AZERTY layout will send "?" when you
+ * press ","+"SHIFT", and number keys are always shifted! To get a "2",
+ * you'd have to press "é"+"SHIFT".
+ *
+ * And that's just the emulator input side. I only own a US English
+ * DMD5620 keyboard, so I don't even know what non-US keyboards looked
+ * like for it, nor what character sets non-US terminals supported! If
+ * anyone knows, please drop me a line (Seth Morabito, <web@loomcom.com>)
+ *
+ */
 void handle_keydown_event(SDL_KeyboardEvent *event) {
     uint8_t c = 0;
+    SDL_Keycode code = event->keysym.sym;
+    SDL_Keycode modified = SDL_GetKeyFromScancode(event->keysym.scancode);
 
-    switch (event->keysym.sym) {
+    LDBG("[KEYDOWN] keysym.sym: 0x%02x (%c)  |  modified: 0x%02x (%c)", code,
+         code >= 0x20 && code < 0x7f ? code : '.', modified,
+         modified >= 0x20 && modified < 0x7f ? modified : '.');
+
+    switch (code) {
     case SDLK_BACKSPACE:
         c = 0xd1;
         break;
@@ -268,7 +317,7 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
     case SDLK_9:
     case SDLK_0:
         c = (uint8_t)(event->keysym.sym & 0xff);
-        if (event->keysym.mod & (KMOD_LSHIFT | KMOD_RSHIFT)) {
+        if (event->keysym.mod & KMOD_SHIFT) {
             c = c - 0x10;
         }
         break;
@@ -300,9 +349,9 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
     case SDLK_y:
     case SDLK_z:
         c = (uint8_t)(event->keysym.sym & 0xff);
-        if (event->keysym.mod & (KMOD_CTRL | KMOD_LCTRL | KMOD_RCTRL)) {
+        if (event->keysym.mod & KMOD_CTRL) {
             c = c & 0x0f;
-        } else if (event->keysym.mod & (KMOD_LSHIFT | KMOD_RSHIFT)) {
+        } else if (event->keysym.mod & KMOD_SHIFT) {
             c = c & 0xdf;
         }
         break;
@@ -310,7 +359,7 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
         return;
     }
 
-    printf("KEY PRESS: 0x%02x (%c)\n", c, c >= 0x20 && c < 0x7f ? c : '.');
+    LDBG("KEY PRESS: 0x%02x (%c)", c, c >= 0x20 && c < 0x7f ? c : '.');
 
     dmd_keyboard_rx(c);
 }
@@ -318,18 +367,16 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
 void sdl_main_loop() {
     SDL_Event ev;
     FPSmanager fpsmanager;
-    int pitch, x, y;
+    int x, y;
     uint8_t *vram;
     uint8_t kbc;
+    Uint64 ticks;
+    size_t steps;
 
     SDL_initFramerate(&fpsmanager);
     SDL_setFramerate(&fpsmanager, 30);
 
-    pitch = sdl_pixel_surface->pitch;
-
-    printf("PITCH: %d\n", pitch);
-
-    // Clear pixels
+    /* Clear pixels */
     SDL_FillRect(sdl_pixel_surface, NULL, 0);
 
     while (running) {
@@ -351,7 +398,7 @@ void sdl_main_loop() {
             vram = dmd_video_ram();
 
             if (!vram) {
-                fprintf(stderr, "ERROR: Unable to access video ram!");
+                LERR("Unable to access video ram!");
                 return;
             }
 
@@ -408,11 +455,27 @@ void sdl_main_loop() {
          */
         if (dmd_keyboard_tx(&kbc) == 0) {
             if (kbc & 0x08) {
-                printf("BEEP!!\n");
+                LDBG("BEEP!!");
             }
         }
 
-        dmd_step_loop(200000);
+        size_t delta;
+
+        ticks = SDL_GetTicks64();
+
+        if (ticks < previous_ticks) {
+            /* Panic?? */
+            LERR("We went backward in time!");
+            return;
+        }
+
+        delta = ticks - previous_ticks;
+        steps = MIN((size_t)(7.2 * delta), MAX_STEPS);
+
+        LDBG("[MAIN LOOP] executing %lu steps in %lu us. rate ~= %.2f MHz", steps, delta,
+             (float)steps / (float)delta);
+
+        dmd_step_loop(steps);
 
         /* Wait for the next frame */
         SDL_framerateDelay(&fpsmanager);
@@ -444,12 +507,14 @@ int main(int argc, char **argv, char **envp) {
     extern char *optarg;
     extern int optind, optopt;
 
-    snprintf(VERSION_STRING, 64, "%d.%d.%d", VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD);
+    snprintf(VERSION_STRING, 64, "%d.%d.%d", VERSION_MAJOR, VERSION_MINOR,
+             VERSION_BUILD);
 
     signal(SIGINT, int_handler);
     signal(SIGCHLD, int_handler);
 
-    while ((c = getopt_long(argc, argv, "hivbd:n:t:p:s:f:", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "hivbd:n:t:p:s:f:", long_options,
+                            &option_index)) != -1) {
         switch (c) {
         case 0:
             break;
@@ -463,7 +528,7 @@ int main(int argc, char **argv, char **envp) {
             printf("Version: %s\n", VERSION_STRING);
             exit(0);
         case 'b': /* Hidden and undocumented */
-            /* TODO: Implement Debug flag */
+            debug_log = true;
             break;
         case 'n':
             nvram = optarg;
@@ -495,13 +560,15 @@ int main(int argc, char **argv, char **envp) {
     }
 
     if (shell != NULL && device != NULL) {
-        fprintf(stderr, "Cannot specify both --shell or --device. Only one is allowed.\n");
+        fprintf(stderr,
+                "Cannot specify both --shell or --device. Only one is allowed.\n");
         return -1;
     }
 
     if (device == NULL) {
         if (stat(shell, &sb) != 0 || (sb.st_mode & S_IXUSR) == 0) {
-            fprintf(stderr, "Cannot open %s as shell, or file is not executable.\n", shell);
+            fprintf(stderr, "Cannot open %s as shell, or file is not executable.\n",
+                    shell);
             return -1;
         }
         pty_init(shell, inherit ? envp : NULL);
@@ -517,7 +584,8 @@ int main(int argc, char **argv, char **envp) {
     } else if (strncmp(FIRMWARE_873, firmware, 5) == 0) {
         dmd_init(1);
     } else {
-        fprintf(stderr, "--firmware must be one of either \"%s\" or \"%s\".\n", FIRMWARE_873, FIRMWARE_875);
+        fprintf(stderr, "--firmware must be one of either \"%s\" or \"%s\".\n",
+                FIRMWARE_873, FIRMWARE_875);
         return -1;
     }
 
@@ -533,10 +601,10 @@ int main(int argc, char **argv, char **envp) {
             rewind(fp);
 
             if (size != NVRAM_SIZE) {
-                fprintf(stderr, "NVRAM file %s does not seem to be valid. Skipping.\n", nvram);
+                LERR("NVRAM file %s does not seem to be valid. Skipping.", nvram);
             } else {
                 if (fread(nvram_buf, NVRAM_SIZE, 1, fp) != 1) {
-                    fprintf(stderr, "Unable to read NVRAM file %s. Skipping.\n", nvram);
+                    LERR("Unable to read NVRAM file %s. Skipping.", nvram);
                 } else {
                     dmd_set_nvram(nvram_buf);
                 }
