@@ -65,13 +65,14 @@
 
 const char *FIRMWARE_873 = "8;7;3";
 const char *FIRMWARE_875 = "8;7;5";
-const size_t MAX_STEPS = 350000;
+const size_t MAX_STEPS = 2000000;
 
 SDL_Window *sdl_window = NULL;
 SDL_Surface *sdl_window_surface = NULL;
 SDL_Surface *sdl_pixel_surface = NULL;
 
 char VERSION_STRING[64];
+char *nvram = NULL;
 int pty_master, pty_slave;
 int sigint_count = 0;
 Uint64 previous_ticks = 0;
@@ -181,7 +182,7 @@ void usage() {
 void pty_io_poll() {
     uint8_t txc;
     char tx_buf[TX_BUF_LEN];
-    int b_read, i;
+    int b_read;
 
     if (poll(fds, 2, 0) > 0) {
         if (fds[0].revents & POLLIN) {
@@ -192,13 +193,12 @@ void pty_io_poll() {
                 exit(-1);
             }
 
-            for (i = 0; i < b_read; i++) {
+            for (int i = 0; i < b_read; i++) {
                 dmd_rs232_rx(tx_buf[i] & 0xff);
             }
         }
     }
 
-    i = 0;
     while (dmd_rs232_tx(&txc) == 0) {
         if (write(pty_master, &txc, 1) < 0) {
             LERR("Error %d from write: %s\n", errno, strerror(errno));
@@ -448,8 +448,7 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
     }
 
     LDBG("[KEYDOWN] keysym.sym: 0x%02x (%c)  |  modified: 0x%02x (%c)", code,
-         code >= 0x20 && code < 0x7f ? code : '.', c,
-         c >= 0x20 && c < 0x7f ? c : '.');
+         code >= 0x20 && code < 0x7f ? code : '.', c, c >= 0x20 && c < 0x7f ? c : '.');
 
     dmd_keyboard_rx(c);
 }
@@ -531,8 +530,8 @@ void sdl_main_loop() {
                     }
                 }
             }
-
             SDL_UnlockSurface(sdl_pixel_surface);
+
             SDL_BlitSurface(sdl_pixel_surface, NULL, sdl_window_surface, NULL);
             SDL_UpdateWindowSurface(sdl_window);
         }
@@ -559,33 +558,47 @@ void sdl_main_loop() {
             return;
         }
 
-        /* We take 7200 simulated steps per millisecond of wall clock
+        /* We take 13,888 simulated steps per millisecond of wall clock
          * time, based on a 7.2 MHz WE 32100 CPU.
          */
         delta = ticks - previous_ticks;
-        steps = MIN((size_t)(7200 * delta), MAX_STEPS);
+        steps = MIN((size_t)(13888 * delta), MAX_STEPS);
         previous_ticks = ticks;
-
-        LDBG("[MAIN LOOP] executing %lu steps in %lu ms. rate ~= %.2f MHz", steps, delta,
-             (float)steps / (float)delta);
 
         dmd_step_loop(steps);
 
         /* Wait for the next frame */
-        SDL_framerateDelay(&fpsmanager);
+        Uint32 delay = SDL_framerateDelay(&fpsmanager);
+
+        LDBG("[MAIN LOOP] delay=%u. Executed %lu steps in %lu ms. rate ~= %.2f MHz",
+             delay, steps, delta, ((float)steps / (float)delta) / 1000.0f);
     }
 }
 
 void sdl_teardown() {
+    uint8_t buf[NVRAM_SIZE];
+    FILE *fp;
+
+    if (nvram && dmd_get_nvram(buf) == 0) {
+        fp = fopen(nvram, "w+");
+        if (fp == NULL) {
+            fprintf(stderr, "Could not open %s for writing. Skipping\n", nvram);
+        } else {
+            if (fwrite(buf, NVRAM_SIZE, 1, fp) != 1) {
+                fprintf(stderr, "Could not write full NVRAM file %s\n", nvram);
+            }
+        }
+    }
+
     if (sdl_window)
         SDL_DestroyWindow(sdl_window);
+
     SDL_Quit();
 }
 
 int main(int argc, char **argv, char **envp) {
     int c, errflg = 0;
 
-    char *nvram = NULL;
     char *shell = NULL;
     char *device = NULL;
     char *firmware = NULL;
