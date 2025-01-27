@@ -29,15 +29,14 @@ later) are also required.
 ### Running the Terminal
 
 ```
-Usage: dmd5620 [-h] [-v] [-i] [-d DEV|-s SHELL] \
-               [-f VER] [-n FILE] [-- <gtk_options> ...]
+Usage: dmd5620 [-h] [-v] [-i] [-d DEV|-s SHELL] [-f VER] [-n FILE]
 AT&T DMD 5620 Terminal emulator.
 
 -h, --help              display help and exit
 -v, --version           display version and exit
 -i, --inherit           inherit parent environment
 -f, --firmware VER      Firmware version ("8;7;3" or "8;7;5")
--d, --device DEV        serial port name
+-d, --device DEV        serial port name (e.g. "/dev/ttyUSB0")
 -s, --shell SHELL       execute SHELL instead of default user shell
 -n, --nvram FILE        store nvram state in FILE
 ```
@@ -61,6 +60,47 @@ Example usage:
 $ dmd5620 --nvram ~/.dmd5620_nvram --shell /bin/sh
 $ dmd5620 --firmware "8;7;3" --nvram ~/.dmd5620_nvram --device /dev/ttyS0
 ```
+
+#### Using the Terminal with `socat`
+
+A major goal of this terminal emulator is to provide a way to interact with the
+[OpenSIMH 3B2 Emulator](https://loomcom.com/3b2/emulator/). An excellent way to
+accomplish this, if running BSD or Linux, is to use the `socat` program to
+forward a virtual serial port on the 3B2 simulator to a pty running on the host
+computer.
+
+First, you will need to configure the 3B2 emulator to use raw TCP instead of
+the Telnet protocol for its virtual serial connection by adding the `notelnet`
+option to the serial port configuration in OpenSIMH.  For example, changing
+from:
+
+```
+ATTACH CONTTY 9100
+```
+
+to:
+
+
+```
+ATTACH CONTTY 9100;notelnet
+```
+
+Next, run `socat` and redirect TCP traffic from this port to a PTY:
+
+```
+sudo socat localhost:9100 pty,raw,echo=0,mode=660,link=/dev/ttySIMH0
+```
+
+This creates a pty at `/dev/ttySIMH0` that the DMD5620 can use.
+
+```
+dmd5620 -d /dev/ttySIMH0 [additional options ...]
+```
+
+Note that there may be permission issues accessing the device. Depending on the
+operating system you're using, you may need to add the user running `dmd5620`
+to a specific group with permission to read and write the pty device you've
+used with `socat`.
 
 ### Configuration
 

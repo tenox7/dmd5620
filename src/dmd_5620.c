@@ -25,6 +25,7 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <poll.h>
 #if defined __APPLE__
@@ -75,6 +76,7 @@ char VERSION_STRING[64];
 char *nvram = NULL;
 int pty_master, pty_slave;
 int sigint_count = 0;
+int tty_fd = -1;
 Uint64 previous_ticks = 0;
 pid_t shell_pid;
 struct pollfd fds[2];
@@ -152,6 +154,51 @@ void pty_init(const char *shell, char *envp[]) {
     close(pty_slave);
 }
 
+/*
+ * Open and initialize a TTY device (e.g. "/dev/ttyS0", "/dev/pts/1", etc.)
+ */
+int
+tty_init(int fd)
+{
+    struct termios tty;
+
+    memset(&tty, 0, sizeof tty);
+
+    if (tcgetattr(fd, &tty) != 0) {
+        fprintf(stderr, "error %d from tcgetattr", errno);
+        return -1;
+    }
+
+    fds[0].fd = fd;
+    fds[0].events = POLLIN;
+    fds[1].fd = fd;
+    fds[1].events = POLLOUT;
+
+    cfsetospeed(&tty, B9600);
+    cfsetispeed(&tty, B9600);
+
+    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;  /* 8-bit characters */
+    tty.c_iflag &= ~IGNBRK;                      /* No break */
+    tty.c_lflag = 0;
+    tty.c_oflag = 0;
+    tty.c_cc[VMIN] = 0;
+    tty.c_cc[VTIME] = 0;
+
+    tty.c_iflag &= ~(IXON | IXOFF | IXANY);
+    tty.c_cflag |= (CLOCAL | CREAD);
+
+    tty.c_cflag &= ~(PARENB | PARODD);
+    tty.c_cflag &= ~CSTOPB;
+    tty.c_cflag &= ~CRTSCTS;
+
+    if (tcsetattr (fd, TCSANOW, &tty) != 0) {
+        fprintf(stderr, "error %d from tcsetattr", errno);
+        return -1;
+    }
+
+    return 0;
+}
+
 struct option long_options[] = {
     {"help", no_argument, 0, 'h'},
     {"version", no_argument, 0, 'v'},
@@ -206,10 +253,36 @@ void pty_io_poll() {
     }
 }
 
+void tty_io_poll() {
+    uint8_t txc;
+    char tx_buf[TX_BUF_LEN];
+    int b_read, i;
+
+    if (poll(fds, 2, 100) > 0) {
+        if (fds[0].revents & POLLIN) {
+
+            b_read = read(tty_fd, tx_buf, TX_BUF_LEN);
+
+            for (i = 0; i < b_read; i++) {
+                dmd_rs232_rx(tx_buf[i] & 0xff);
+            }
+        }
+    }
+
+    i = 0;
+    while (dmd_rs232_tx(&txc) == 0) {
+        if (write(tty_fd, &txc, 1) < 0) {
+            fprintf(stderr, "error %d during write: %s\n", errno, strerror(errno));
+        }
+    }
+}
+
 /*
  * Initialize the SDL system and get the window, surface, and renderer.
  */
 bool sdl_init() {
+    SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
+
     /* Initialize audio (for keyboard beeps), video, and event handling */
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
         LERR("Error initializing SDL: %s", SDL_GetError());
@@ -458,7 +531,6 @@ void sdl_main_loop() {
     FPSmanager fpsmanager;
     int x, y;
     uint8_t *vram;
-    uint8_t kbc;
     Uint64 ticks;
     size_t steps;
 
@@ -469,6 +541,19 @@ void sdl_main_loop() {
     SDL_FillRect(sdl_pixel_surface, NULL, 0);
 
     while (running) {
+        /*
+         * Some notes on event handling:
+         *
+         * - The DMD considers screen origin to be top-right, so X
+         *   coordinates are backward with respect to SDL.
+         *
+         * - SDL mouse buttons are numbered 1, 2, 3, whereas the DMD
+         *   expects buttons to be numbered 0, 1, 2.
+         *
+         * - TODO: Mouse movement may not be right in high-dpi screens, or
+         *   screens with fractional scaling. I need to test this.
+         */
+
         while (SDL_PollEvent(&ev) != 0) {
             switch (ev.type) {
             case SDL_QUIT:
@@ -476,6 +561,26 @@ void sdl_main_loop() {
                 break;
             case SDL_KEYDOWN:
                 handle_keydown_event(&ev.key);
+                break;
+            case SDL_MOUSEMOTION:
+                if (ev.motion.x >= 0 && ev.motion.x <= WIDTH && ev.motion.y >= 0 &&
+                    ev.motion.y <= HEIGHT) {
+                    dmd_mouse_move((uint16_t)ev.motion.x,
+                                   (uint16_t)(HEIGHT - ev.motion.y));
+                }
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+                if (ev.button.button > 0 && ev.button.button <= 3) {
+                    dmd_mouse_down((uint8_t)(ev.button.button - 1));
+                }
+                break;
+            case SDL_MOUSEBUTTONUP:
+                if (ev.button.button > 0 && ev.button.button <= 3) {
+                    dmd_mouse_up((uint8_t)(ev.button.button - 1));
+                }
+                break;
+            default:
+                /* Do nothing */
                 break;
             }
         }
@@ -536,17 +641,26 @@ void sdl_main_loop() {
             SDL_UpdateWindowSurface(sdl_window);
         }
 
-        /* Execute the simulator */
-        pty_io_poll();
-
         /*
-         * Poll for output to the keyboard (i.e. system beep)
+         * Poll for serial i/o
          */
+        if (tty_fd < 0)
+            pty_io_poll();
+        else
+            tty_io_poll();
+
+        /* TODO: We need to produce a beep sound here, just like the
+         * original terminal did. We also need a way to turn that off if a
+         * user doesn't want it!
+         */
+        /*
+        uint8_t kbc;
         if (dmd_keyboard_tx(&kbc) == 0) {
             if (kbc & 0x08) {
-                LDBG("BEEP!!");
+                // Beep here.
             }
         }
+        */
 
         size_t delta;
 
@@ -678,11 +792,20 @@ int main(int argc, char **argv, char **envp) {
                     shell);
             return -1;
         }
+
         pty_init(shell, inherit ? envp : NULL);
     } else {
-        /* TODO */
-        fprintf(stderr, "[TODO] Device support not implemented yet.\n");
-        return -1;
+        if (stat(device, &sb) != 0) {
+            fprintf(stderr, "Cannot open device %s.\n", device);
+            exit(1);
+        }
+        tty_fd = open(device, O_RDWR|O_NOCTTY|O_SYNC);
+        if (tty_fd < 0) {
+            fprintf(stderr, "error %d opening %s: %s\n", errno, device, strerror(errno));
+            return -1;
+        }
+
+        tty_init(tty_fd);
     }
 
     /* Initialize the CPU */

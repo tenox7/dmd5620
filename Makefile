@@ -27,7 +27,7 @@ all: $(EXE)
 clean:
 	@rm -f $(EXE) $(OBJ)
 
-deepclean: $(clean)
+deepclean: clean
 	@cd $(LIBDIR) && $(CARGO) clean
 
 $(CORELIB):
