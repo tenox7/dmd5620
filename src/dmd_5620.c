@@ -157,9 +157,7 @@ void pty_init(const char *shell, char *envp[]) {
 /*
  * Open and initialize a TTY device (e.g. "/dev/ttyS0", "/dev/pts/1", etc.)
  */
-int
-tty_init(int fd)
-{
+int tty_init(int fd) {
     struct termios tty;
 
     memset(&tty, 0, sizeof tty);
@@ -177,8 +175,8 @@ tty_init(int fd)
     cfsetospeed(&tty, B9600);
     cfsetispeed(&tty, B9600);
 
-    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;  /* 8-bit characters */
-    tty.c_iflag &= ~IGNBRK;                      /* No break */
+    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8; /* 8-bit characters */
+    tty.c_iflag &= ~IGNBRK;                     /* No break */
     tty.c_lflag = 0;
     tty.c_oflag = 0;
     tty.c_cc[VMIN] = 0;
@@ -191,7 +189,7 @@ tty_init(int fd)
     tty.c_cflag &= ~CSTOPB;
     tty.c_cflag &= ~CRTSCTS;
 
-    if (tcsetattr (fd, TCSANOW, &tty) != 0) {
+    if (tcsetattr(fd, TCSANOW, &tty) != 0) {
         fprintf(stderr, "error %d from tcsetattr", errno);
         return -1;
     }
@@ -799,7 +797,7 @@ int main(int argc, char **argv, char **envp) {
             fprintf(stderr, "Cannot open device %s.\n", device);
             exit(1);
         }
-        tty_fd = open(device, O_RDWR|O_NOCTTY|O_SYNC);
+        tty_fd = open(device, O_RDWR | O_NOCTTY | O_SYNC);
         if (tty_fd < 0) {
             fprintf(stderr, "error %d opening %s: %s\n", errno, device, strerror(errno));
             return -1;

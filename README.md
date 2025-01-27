@@ -1,10 +1,16 @@
 # SDL DMD 5620 Emulator
 
-This is a SDL2 implementation of an AT&T / Teletype DMD 5620 emulator.
+This is an SDL2 implementation of an AT&T / Teletype DMD 5620 emulator.
+
+For additional information and documentation beyond this README file,
+please visit [https://loomcom.com/3b2/dmd5620-emulator/](https://loomcom.com/3b2/dmd5620-emulator/).
 
 ## Status
 
-No releases yet. This is an active work-in-progress port from the GTK version.
+Version: 0.1.0
+
+This is an actively developed project. Bug reports and feature enhancements are
+welcome.
 
 ## Dependencies
 
@@ -88,13 +94,13 @@ ATTACH CONTTY 9100;notelnet
 Next, run `socat` and redirect TCP traffic from this port to a PTY:
 
 ```
-sudo socat TCP:localhost:9100 pty,raw,echo=0,mode=660,link=/dev/ttySIMH0
+sudo socat TCP:localhost:9100 pty,raw,echo=0,mode=660,link=/dev/ttyDMD
 ```
 
-This creates a pty at `/dev/ttySIMH0` that the DMD5620 can use.
+This creates a pty at `/dev/ttyDMD` that the DMD5620 can use.
 
 ```
-dmd5620 -d /dev/ttySIMH0 [additional options ...]
+dmd5620 -d /dev/ttyDMD [additional options ...]
 ```
 
 Note that there may be permission issues accessing the device. Depending on the
@@ -128,8 +134,11 @@ Certain keys are mapped to special DMD5620 function keys.
 
 ## Changelog
 
-TODO: Coming soon!
-  
+### Version 0.1.0 (27 January, 2025)
+
+- Initial release, suitable for testing. This has been tested on Linux, but not
+  yet on any other operating system.
+
 ## To Do
 
 - Local serial line support is not yet implemented.
