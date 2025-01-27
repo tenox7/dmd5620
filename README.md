@@ -88,7 +88,7 @@ ATTACH CONTTY 9100;notelnet
 Next, run `socat` and redirect TCP traffic from this port to a PTY:
 
 ```
-sudo socat localhost:9100 pty,raw,echo=0,mode=660,link=/dev/ttySIMH0
+sudo socat TCP:localhost:9100 pty,raw,echo=0,mode=660,link=/dev/ttySIMH0
 ```
 
 This creates a pty at `/dev/ttySIMH0` that the DMD5620 can use.
