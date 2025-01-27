@@ -281,6 +281,9 @@ void tty_io_poll() {
 bool sdl_init() {
     SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
 
+	SDL_setenv("SDL_VIDEO_X11_WMCLASS", "com.loomcom.dmd5620", 1);
+	SDL_setenv("SDL_VIDEO_WAYLAND_WMCLASS", "com.loomcom.dmd5620", 1);
+
     /* Initialize audio (for keyboard beeps), video, and event handling */
     if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
         LERR("Error initializing SDL: %s", SDL_GetError());

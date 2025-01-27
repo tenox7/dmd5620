@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=dmd5620
+GenericName=DMD5620 Terminal Emulator
+Comment=Terminal emulator based on the AT&T DMD 5620 terminal
+Exec=dmd5620 -s $SHELL -n $XDG_DATA_HOME/com.loomcom.dmd5620.nvram
+TryExec=dmd5620
+Icon=dmd5620
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=false
+StartupWMClass=com.loomcom.dmd5620
