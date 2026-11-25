@@ -159,11 +159,17 @@ try:
     before = lit_fraction()
     tool("type-text", text="demo rose\n")
     check(wait_for(lambda: lit_fraction() > before + 0.01, 30), "demo rose draws in the window")
-    print("     lit: %.3f before, %.3f after" % (before, lit_fraction()))
+    drawn = lit_fraction()
+    print("     lit: %.3f before, %.3f after" % (before, drawn))
     # Keys typed before the program takes the keyboard go to the host
-    # shell: wait. Ctrl-U clears the shell's line if a key went there.
+    # shell: wait, and type q again until the drawing is gone. Ctrl-U
+    # clears the shell's line if a q went there.
     time.sleep(3)
-    tool("type-text", text="q")
+    for _ in range(4):
+        tool("type-text", text="q")
+        if wait_for(lambda: lit_fraction() < (before + drawn) / 2, 6):
+            break
+    print("     lit after q: %.3f" % lit_fraction())
     out5 = os.path.join(tmp, "after.txt")
     for _ in range(4):
         time.sleep(3)
