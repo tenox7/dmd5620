@@ -25,7 +25,8 @@ Ready binaries are on the [Releases](../../releases) page:
 
 | File | For |
 |---|---|
-| `dmd5620-VERSION-macos.zip` | macOS 10.13 and later, Apple silicon and Intel |
+| `dmd5620-VERSION-macos.dmg` | macOS 10.13 and later, Apple silicon and Intel: `DMD5620.app`, drag it to Applications |
+| `dmd5620-VERSION-macos.zip` | The same for macOS, as a command line program |
 | `dmd5620-VERSION-linux-x86_64.tar.gz` | Linux on x86_64 (needs the SDL2 package) |
 | `dmd5620-VERSION-linux-arm64.tar.gz` | Linux on arm64 (needs the SDL2 package) |
 | `dmd5620-VERSION-freebsd-amd64.tar.gz` | FreeBSD 14 on amd64 (needs `pkg install sdl2`) |
@@ -54,7 +55,7 @@ Other options:
 | `-f VER`, `--firmware` | Firmware `"8;7;3"` or `"8;7;5"` (default) |
 | `-n FILE`, `--nvram` | Keep the terminal's settings (its NVRAM) in FILE |
 | `-i`, `--inherit` | Give the shell your whole environment, not a small clean one |
-| `--scale N` | Window size; 1 is 800x1024. Default: the biggest size that fits the screen |
+| `--scale N` | Window size; 1 is 800x1024, pixel for pixel (default). Whole numbers stay sharp |
 | `--headless` | No window. MCP still sees the screen |
 | `--name NAME` | Name of this terminal in the MCP tools |
 | `--no-mcp` | No MCP control socket |

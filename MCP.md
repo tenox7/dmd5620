@@ -19,9 +19,12 @@ Windows 10 or later.
 1. Get or build `dmd5620` (see [README.md](README.md)).
 2. Add the bridge to your agent once.
    - Claude Code: `claude mcp add dmd5620 -s user -- /path/to/dmd5620 --mcp-bridge`
+   - With the macOS app, the program is
+     `/Applications/DMD5620.app/Contents/MacOS/dmd5620`.
    - Other MCP clients: a stdio server with that command.
 3. Start an emulator from a shell: `dmd5620` (window) or
    `dmd5620 --headless` (no window; the agent still sees the screen).
+   On macOS, opening `DMD5620.app` also starts one.
 4. In the agent: `vm-list`, then `screenshot`.
 
 ## Settings
@@ -31,7 +34,7 @@ Windows 10 or later.
 | `--name NAME`, `DMD_NAME=` | The VM name in the tools (default `dmd5620`) |
 | `--headless`, `DMD_HEADLESS=1` | No window |
 | `--no-mcp`, `DMD_MCP=0` | No MCP socket |
-| `--scale N` | Window size; 1 = 800x1024. Default: the biggest whole size that fits the screen |
+| `--scale N` | Window size; 1 = 800x1024, pixel for pixel (default) |
 
 ## Tools
 

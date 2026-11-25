@@ -1,12 +1,14 @@
 #!/bin/sh
 # Build the macOS release: one universal (arm64 + x86_64) binary with SDL2
-# linked in statically. Work files go to build/.
+# linked in statically, as a plain zip (command line) and as DMD5620.app in
+# a DMG. Work files go to build/, the results to build/dist/.
 #
-#   tools/release-macos.sh            build build/dist/dmd5620-VERSION-macos.zip
+#   tools/release-macos.sh
 #
 # With DEV_ID (a "Developer ID Application: ..." identity in the keychain)
 # and NOTARY_PROFILE (an `xcrun notarytool store-credentials` profile) set,
-# it also signs the binary and has Apple notarize it.
+# it also signs everything and has Apple notarize the zip and the DMG.
+# Without them in the environment, it reads them from .env (DEV_ID := ...).
 set -e
 cd "$(dirname "$0")/.."
 SDL_VER=2.32.10
@@ -15,6 +17,18 @@ export MACOSX_DEPLOYMENT_TARGET=10.13
 ARCHS="-arch arm64 -arch x86_64"
 VERSION=$(awk '/VERSION_(MAJOR|MINOR|BUILD)/ {v = v (v ? "." : "") $3} END {print v}' src/version.h)
 B=$PWD/build
+envval() { sed -n "s/^$1 *:\{0,1\}= *//p" .env | tail -1; }
+if [ -z "$DEV_ID" ] && [ -f .env ]; then
+    DEV_ID=$(envval DEV_ID)
+    NOTARY_PROFILE=${NOTARY_PROFILE:-$(envval NOTARY_PROFILE)}
+fi
+
+# notarize FILE: send it to Apple and wait; fail unless Apple accepts it.
+notarize() {
+    out=$(xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1) || true
+    echo "$out" | grep -E "^ *(id|status):" | awk '!seen[$0]++'
+    echo "$out" | grep -q "status: Accepted" || { echo "notarization failed: $1"; exit 1; }
+}
 
 # SDL2, static and universal
 if [ ! -f "$B/sdl2-macos/lib/libSDL2.a" ]; then
@@ -45,18 +59,50 @@ if otool -L dmd5620 | grep "^	" | grep -v -E "/System/Library/|/usr/lib/"; then
     exit 1
 fi
 
-if [ -n "$DEV_ID" ]; then
-    codesign --force --options runtime --timestamp -s "$DEV_ID" dmd5620
-    codesign --verify --strict dmd5620
-fi
+SIGN="-" TS=""
+[ -n "$DEV_ID" ] && SIGN=$DEV_ID TS="--timestamp"
+
+# The app. It gets its own copy of the binary: signing the bundle signs it again.
+APP=$B/dist/DMD5620.app
+rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp assets/Info.plist "$APP/Contents/"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"
+cp assets/dmd5620.icns "$APP/Contents/Resources/"
+cp dmd5620 "$APP/Contents/MacOS/"
+codesign --force --options runtime $TS -s "$SIGN" "$APP"
+codesign --verify --strict --deep "$APP"
+
+# The command line binary
+codesign --force --options runtime $TS -i com.github.tenox7.dmd5620 -s "$SIGN" dmd5620
+codesign --verify --strict dmd5620
 
 D=$B/dist/dmd5620-$VERSION-macos
 rm -rf "$D" "$D.zip" && mkdir -p "$D"
 cp dmd5620 README.md MCP.md LICENSE.md "$D/"
 cp dmd5620.man "$D/dmd5620.1"
 (cd "$B/dist" && ditto -c -k --keepParent "dmd5620-$VERSION-macos" "dmd5620-$VERSION-macos.zip")
+rm -rf "$D"
+
+# The DMG: the app and a link to /Applications
+DMG=$D.dmg
+S=$B/dmg-staging
+rm -rf "$S" "$DMG" && mkdir -p "$S"
+cp -R "$APP" "$S/"
+ln -s /Applications "$S/Applications"
+hdiutil create -quiet -volname "DMD5620 $VERSION" -srcfolder "$S" -ov -format UDZO "$DMG"
+rm -rf "$S"
+[ -n "$DEV_ID" ] && codesign --force --timestamp -s "$DEV_ID" "$DMG"
+# hdiutil can leave a diskimages-helper that holds the DMG; notarytool then hangs.
+for p in $(lsof -t "$DMG" 2>/dev/null); do
+    ps -o comm= -p "$p" | grep -q diskimages-helper && kill -9 "$p"
+done
 
 if [ -n "$DEV_ID" ] && [ -n "$NOTARY_PROFILE" ]; then
-    xcrun notarytool submit "$D.zip" --keychain-profile "$NOTARY_PROFILE" --wait
+    notarize "$D.zip"
+    notarize "$DMG"
+    xcrun stapler staple -q "$DMG"
+    xcrun stapler validate -q "$DMG" && echo "DMG stapled"
 fi
 echo "$D.zip"
+echo "$DMG"

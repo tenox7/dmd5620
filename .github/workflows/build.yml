@@ -56,16 +56,21 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build (universal, SDL2 static)
+      - name: Build (universal, SDL2 static; zip and DMG)
         run: sh tools/release-macos.sh
       - name: Test
         run: |
           python3 test/smoke.py ./dmd5620
           python3 test/smoke.py ./dmd5620 "8;7;3"
+          hdiutil attach -nobrowse -mountpoint /tmp/dmg build/dist/dmd5620-*-macos.dmg
+          python3 test/smoke.py /tmp/dmg/DMD5620.app/Contents/MacOS/dmd5620
+          hdiutil detach /tmp/dmg
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: build/dist/*.zip
+          path: |
+            build/dist/*.zip
+            build/dist/*.dmg
 
   windows-build:
     runs-on: ubuntu-24.04

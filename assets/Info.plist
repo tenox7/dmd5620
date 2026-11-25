@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>DMD5620</string>
+	<key>CFBundleExecutable</key>
+	<string>dmd5620</string>
+	<key>CFBundleIconFile</key>
+	<string>dmd5620</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.github.tenox7.dmd5620</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>DMD5620</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.0.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>10.13</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright 2018-2025 Seth Morabito, 2026 the dmd5620 authors. MIT license.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>The shell in the terminal uses your files.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>The shell in the terminal uses your files.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>The shell in the terminal uses your files.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>The shell in the terminal uses your files.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>The shell in the terminal uses your files.</string>
+</dict>
+</plist>

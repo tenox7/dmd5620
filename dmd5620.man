@@ -1,4 +1,4 @@
-.TH dmd5620 1 "24 Nov 2026" "0.2.0" "AT&T DMD 5620 Terminal Emulator"
+.TH dmd5620 1 "24 Nov 2026" "0.2.1" "AT&T DMD 5620 Terminal Emulator"
 .SH NAME
 dmd5620 \- AT&T DMD 5620 Terminal Emulator
 .SH SYNOPSIS
@@ -38,8 +38,9 @@ if not specified is \fB"8;7;5"\fR.
 Store NVRAM state in file \fIFILE\fR. No default.
 .TP
 .BR \-\-scale " " \fIN\fR
-Window size: 1 is 800x1024. The default is the biggest size that fits
-the screen.
+Window size: 1 is 800x1024, one DMD pixel per screen point. The default
+is 1, or smaller when the screen is too small for it. Whole numbers keep
+the pixels sharp.
 .TP
 .BR \-\-headless
 No window. The MCP tools still see the screen.

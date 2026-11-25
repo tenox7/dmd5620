@@ -118,8 +118,8 @@ void usage() {
     printf("-v, --version           display version and exit\n");
     printf("-f, --firmware VER      firmware version (\"8;7;3\" or \"8;7;5\")\n");
     printf("-n, --nvram FILE        store nvram state in FILE\n");
-    printf("    --scale N           window size: 1 = 800x1024 (default: fit the "
-           "screen)\n");
+    printf("    --scale N           window size: 1 = 800x1024, pixel for pixel "
+           "(default)\n");
     printf("    --headless          no window (for agents; MCP still sees the "
            "screen)\n");
     printf("    --name NAME         VM name for MCP tools (default: dmd5620)\n");
@@ -193,20 +193,16 @@ bool sdl_init(const char *title) {
         return false;
     }
 
-    /* Window size: the biggest whole scale that fits the screen. */
+    /* Window size: 1:1 (one DMD pixel per screen point), smaller only
+     * when the screen is too small for that. */
     double scale = window_scale;
     if (scale <= 0) {
         SDL_Rect usable;
         scale = 1;
         if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.h > 0) {
             int room = usable.h - 40; /* title bar */
-            for (int s = 3; s >= 1; s--) {
-                if (HEIGHT * s <= room) {
-                    scale = s;
-                    break;
-                }
+            if (HEIGHT > room)
                 scale = (double)room / HEIGHT;
-            }
         }
     }
 
@@ -679,6 +675,14 @@ int main(int argc, char **argv) {
     int option_index = 0;
 
     plat_init();
+#ifdef __APPLE__
+    /* Before 10.9, macOS gives an app started from the Finder a -psn_X_Y argument. */
+    if (argc > 1 && strncmp(argv[1], "-psn_", 5) == 0) {
+        argv[1] = argv[0];
+        argv++;
+        argc--;
+    }
+#endif
     snprintf(VERSION_STRING, 64, "%d.%d.%d", VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD);
 
     while ((c = getopt_long(argc, argv, "hivbd:n:t:s:f:", long_options, &option_index)) !=
