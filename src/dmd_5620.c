@@ -179,7 +179,9 @@ static void update_scale_mode() {
  */
 bool sdl_init(const char *title) {
 #ifdef __linux__
+#ifdef SDL_HINT_VIDEODRIVER /* SDL 2.0.22 and later */
     SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
+#endif
 
     SDL_setenv("SDL_VIDEO_X11_WMCLASS", "com.loomcom.dmd5620", 1);
     SDL_setenv("SDL_VIDEO_WAYLAND_WMCLASS", "com.loomcom.dmd5620", 1);

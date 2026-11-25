@@ -181,8 +181,8 @@ bool host_open_shell(const char *shell, bool inherit) {
         /* Started from a desktop (Finder, a menu): begin at home. */
         char cwd[8];
         const char *home = getenv("HOME");
-        if (home && getcwd(cwd, sizeof(cwd)) && strcmp(cwd, "/") == 0)
-            (void)chdir(home);
+        if (home && getcwd(cwd, sizeof(cwd)) && strcmp(cwd, "/") == 0 && chdir(home) != 0)
+            perror(home); /* the shell starts in / then */
         execle(shell, "-", (char *)NULL, envp);
         perror("Could not start shell process");
         _exit(127);
