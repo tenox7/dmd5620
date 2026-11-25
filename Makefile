@@ -101,6 +101,9 @@ layers: $(LAYERS_SRC)/Makefile
 	$(MAKE) -j1 -C $(LAYERS_SRC) clean
 	$(MAKE) -j1 -C $(LAYERS_SRC) DMD=$(CURDIR)/layers EXTRACFLAGS="$(LAYERS_CFLAGS)" install
 	rm -rf layers/xt
+	@for f in bin/layers bin/jwin bin/xtagent lib/layersys/movelogin; do \
+		test -x layers/$$f || { echo "layers: $$f was not built"; exit 1; }; \
+	done
 
 $(LAYERS_SRC)/Makefile:
 	git submodule update --init $(LAYERS_SRC)
