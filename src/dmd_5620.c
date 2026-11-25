@@ -186,6 +186,11 @@ bool sdl_init(const char *title) {
     SDL_setenv("SDL_VIDEO_X11_WMCLASS", "com.loomcom.dmd5620", 1);
     SDL_setenv("SDL_VIDEO_WAYLAND_WMCLASS", "com.loomcom.dmd5620", 1);
 #endif
+#if defined(_WIN32) && defined(SDL_HINT_WINDOWS_DPI_AWARENESS) /* SDL 2.24 and later */
+    /* Window sizes in real pixels, so --scale 1 is pixel for pixel. Without
+     * this, Windows stretches the window at 125% or 150% display scale. */
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#endif
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
