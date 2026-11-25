@@ -1,4 +1,5 @@
-Copyright 2025, Seth Morabito <web@loomcom.com>
+Copyright 2018-2025, Seth Morabito <web@loomcom.com>
+Copyright 2026, the dmd5620 authors (C core, portability, MCP server)
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the

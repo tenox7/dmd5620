@@ -25,32 +25,21 @@
  */
 
 #include <errno.h>
-#include <fcntl.h>
 #include <getopt.h>
-#include <poll.h>
-#if defined __APPLE__
-#include <sys/ioctl.h>
-#include <sys/resource.h>
-#include <util.h>
-#else
-#include <pty.h>
-#endif
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <termios.h>
-#include <time.h>
-#include <unistd.h>
 
 #include <SDL.h>
 #include <SDL_keycode.h>
 
 #include "ctl.h"
 #include "dmd_5620.h"
+#include "host.h"
+#include "plat.h"
 #include "version.h"
 
 #define KEYSYM(e, u, s) (((e)->keysym.mod & KMOD_SHIFT) ? (s) : (u))
@@ -64,9 +53,9 @@
 #define LDBG(f, ...)                                                                    \
     do {                                                                                \
         if (debug_log)                                                                  \
-            fprintf(stdout, ("[DEBUG] " f "\n")__VA_OPT__(, ) __VA_ARGS__);             \
+            fprintf(stdout, "[DEBUG] " f "\n", ##__VA_ARGS__);             \
     } while (0)
-#define LERR(f, ...) fprintf(stderr, ("[ERROR] " f "\n")__VA_OPT__(, ) __VA_ARGS__)
+#define LERR(f, ...) fprintf(stderr, "[ERROR] " f "\n", ##__VA_ARGS__)
 
 const char *FIRMWARE_873 = "8;7;3";
 const char *FIRMWARE_875 = "8;7;5";
@@ -79,11 +68,7 @@ SDL_Texture *sdl_texture = NULL;
 
 char VERSION_STRING[64];
 char *nvram = NULL;
-int pty_master, pty_slave;
 int sigint_count = 0;
-int tty_fd = -1;
-pid_t shell_pid;
-struct pollfd fds[2];
 bool debug_log;
 bool headless = false;
 bool mcp_on = true;
@@ -102,152 +87,7 @@ void int_handler(int signal) {
     sigint_count++;
 }
 
-/*
- * Environment for the shell. Without --inherit the shell gets a small
- * clean environment. TERM is always "dmd", because that is what the
- * shell talks to.
- */
-static char **shell_env(bool inherit, char *envp[], const char *shell) {
-    static const char *keep[] = {"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", NULL};
-    size_t n = 0, cap = 16;
-    char **env = calloc(cap, sizeof(char *));
-
-    if (!env)
-        return envp;
-
-    if (inherit && envp) {
-        for (char **e = envp; *e; e++) {
-            if (strncmp(*e, "TERM=", 5) == 0)
-                continue;
-            if (n + 3 >= cap) {
-                cap *= 2;
-                char **ne = realloc(env, cap * sizeof(char *));
-                if (!ne)
-                    return envp;
-                env = ne;
-            }
-            env[n++] = *e;
-        }
-    } else {
-        for (int i = 0; keep[i]; i++) {
-            const char *v = getenv(keep[i]);
-            if (v) {
-                size_t len = strlen(keep[i]) + strlen(v) + 2;
-                char *s = malloc(len);
-                if (s) {
-                    snprintf(s, len, "%s=%s", keep[i], v);
-                    env[n++] = s;
-                }
-            }
-        }
-        size_t len = strlen(shell) + 7;
-        char *s = malloc(len);
-        if (s) {
-            snprintf(s, len, "SHELL=%s", shell);
-            env[n++] = s;
-        }
-    }
-    env[n++] = "TERM=dmd";
-    env[n] = NULL;
-    return env;
-}
-
-/*
- * Initialize a shell PTY
- */
-void pty_init(const char *shell, char *envp[]) {
-    char pty_name[64];
-    /* The DMD's own terminal is 88x70 characters (terminfo "dmd"). */
-    struct winsize ws = {70, 88, WIDTH, HEIGHT};
-
-    /* Set up our PTY */
-    if (openpty(&pty_master, &pty_slave, pty_name, NULL, &ws) < 0) {
-        perror("Could not open terminal pty: ");
-        exit(-1);
-    }
-
-    /* Fork the shell process */
-
-    fds[0].fd = pty_master;
-    fds[0].events = POLLIN;
-
-    shell_pid = fork();
-
-    if (shell_pid < 0) {
-        perror("Could not fork child shell: ");
-        exit(-1);
-    } else if (shell_pid == 0) {
-        /* Child */
-        int retval;
-        close(pty_master);
-
-        setsid();
-
-        if (ioctl(pty_slave, TIOCSCTTY, NULL) == -1) {
-            perror("Ioctl erorr: ");
-            exit(-1);
-        }
-
-        dup2(pty_slave, 0);
-        dup2(pty_slave, 1);
-        dup2(pty_slave, 2);
-        close(pty_slave);
-
-        retval = execle(shell, "-", NULL, envp);
-
-        /* Child process is now replaced, nothing beyond this point
-           will ever be reached unless there's an error. */
-        if (retval < 0) {
-            perror("Could not start shell process: ");
-            exit(-1);
-        }
-    }
-
-    close(pty_slave);
-}
-
-/*
- * Open and initialize a TTY device (e.g. "/dev/ttyS0", "/dev/pts/1", etc.)
- */
-int tty_init(int fd) {
-    struct termios tty;
-
-    memset(&tty, 0, sizeof tty);
-
-    if (tcgetattr(fd, &tty) != 0) {
-        fprintf(stderr, "error %d from tcgetattr", errno);
-        return -1;
-    }
-
-    fds[0].fd = fd;
-    fds[0].events = POLLIN;
-
-    cfsetospeed(&tty, B9600);
-    cfsetispeed(&tty, B9600);
-
-    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8; /* 8-bit characters */
-    tty.c_iflag &= ~IGNBRK;                     /* No break */
-    tty.c_lflag = 0;
-    tty.c_oflag = 0;
-    tty.c_cc[VMIN] = 0;
-    tty.c_cc[VTIME] = 0;
-
-    tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-    tty.c_cflag |= (CLOCAL | CREAD);
-
-    tty.c_cflag &= ~(PARENB | PARODD);
-    tty.c_cflag &= ~CSTOPB;
-    tty.c_cflag &= ~CRTSCTS;
-
-    if (tcsetattr(fd, TCSANOW, &tty) != 0) {
-        fprintf(stderr, "error %d from tcsetattr", errno);
-        return -1;
-    }
-
-    return 0;
-}
-
-enum { OPT_HEADLESS = 1000, OPT_NAME, OPT_NO_MCP, OPT_BRIDGE, OPT_SCALE };
+enum { OPT_HEADLESS = 1000, OPT_NAME, OPT_NO_MCP, OPT_BRIDGE, OPT_SCALE, OPT_TCP, OPT_BAUD };
 
 struct option long_options[] = {
     {"help", no_argument, 0, 'h'},
@@ -256,6 +96,9 @@ struct option long_options[] = {
     {"firmware", required_argument, 0, 'f'},
     {"shell", required_argument, 0, 's'},
     {"device", required_argument, 0, 'd'},
+    {"baud", required_argument, 0, OPT_BAUD},
+    {"telnet", required_argument, 0, 't'},
+    {"tcp", required_argument, 0, OPT_TCP},
     {"nvram", required_argument, 0, 'n'},
     {"headless", no_argument, 0, OPT_HEADLESS},
     {"name", required_argument, 0, OPT_NAME},
@@ -266,18 +109,15 @@ struct option long_options[] = {
     {0, 0, 0, 0}};
 
 void usage() {
-    printf("Usage: dmd5620 [-h] [-v] [-i] [-f VER] [-n FILE] [-s SHELL|-d DEV]\n");
-    printf("               [--scale N] [--headless] [--name NAME] [--no-mcp]\n");
+    printf("Usage: dmd5620 [-h] [-v] [-i] [-f VER] [-n FILE] [--scale N] [--headless]\n");
+    printf("               [--name NAME] [--no-mcp]\n");
+    printf("               [-s SHELL | -d DEV [--baud N] | -t HOST[:PORT] | --tcp HOST:PORT]\n");
     printf("       dmd5620 --mcp-bridge\n");
     printf("AT&T DMD 5620 Terminal emulator.\n\n");
     printf("-h, --help              display help and exit\n");
     printf("-v, --version           display version and exit\n");
-    printf("-i, --inherit           inherit parent environment\n");
-    printf("-f, --firmware VER      Firmware version (\"8;7;3\" or \"8;7;5\")\n");
+    printf("-f, --firmware VER      firmware version (\"8;7;3\" or \"8;7;5\")\n");
     printf("-n, --nvram FILE        store nvram state in FILE\n");
-    printf("-s, --shell SHELL       execute SHELL instead of default user "
-           "shell ($SHELL)\n");
-    printf("-d, --device DEV        serial port name\n");
     printf("    --scale N           window size: 1 = 800x1024 (default: fit the "
            "screen)\n");
     printf("    --headless          no window (for agents; MCP still sees the "
@@ -286,60 +126,41 @@ void usage() {
     printf("    --no-mcp            do not open the MCP control socket "
            "(also: DMD_MCP=0)\n");
     printf("    --mcp-bridge        run as the MCP server (stdio) for agents\n");
+    printf("\nHost connection (one of these):\n");
+#ifndef _WIN32
+    printf("-s, --shell SHELL       run SHELL (default: $SHELL)\n");
+    printf("-i, --inherit           give the shell the whole environment\n");
+#endif
+    printf("-d, --device DEV        serial port (/dev/ttyS0, /dev/cu.usbserial, COM1)\n");
+    printf("    --baud N            serial port speed (default 9600)\n");
+    printf("-t, --telnet HOST[:PORT] telnet server (default port 23)\n");
+    printf("    --tcp HOST:PORT     raw TCP connection\n");
 }
 
 /*
- * PTY implemntation of read and write polling
+ * Move bytes between the host line and the DMD's RS-232 port. We read at
+ * most TX_BUF_LEN bytes per frame; the DUART then hands them to the
+ * firmware at the baud rate set in the DMD's Setup.
  */
-void pty_io_poll() {
-    uint8_t txc;
-    char tx_buf[TX_BUF_LEN];
-    int b_read;
+static void host_io_poll(void) {
+    uint8_t buf[TX_BUF_LEN], txc;
+    int n = host->read(buf, TX_BUF_LEN);
 
-    if (poll(fds, 1, 0) > 0) {
-        if (fds[0].revents & (POLLIN | POLLHUP)) {
-            b_read = read(pty_master, tx_buf, TX_BUF_LEN);
-
-            if (b_read <= 0) {
-                /* The shell has exited. */
-                running = false;
-                return;
-            }
-
-            for (int i = 0; i < b_read; i++) {
-                dmd_rs232_rx(tx_buf[i] & 0xff);
-            }
-        }
+    if (n < 0) {
+        /* The shell exited or the connection closed. */
+        running = false;
+        return;
     }
+    for (int i = 0; i < n; i++)
+        dmd_rs232_rx(buf[i]);
 
-    while (dmd_rs232_tx(&txc) == 0) {
-        if (write(pty_master, &txc, 1) < 0) {
-            LERR("Error %d from write: %s", errno, strerror(errno));
-        }
-    }
-}
-
-void tty_io_poll() {
-    uint8_t txc;
-    char tx_buf[TX_BUF_LEN];
-    int b_read, i;
-
-    if (poll(fds, 1, 0) > 0) {
-        if (fds[0].revents & POLLIN) {
-
-            b_read = read(tty_fd, tx_buf, TX_BUF_LEN);
-
-            for (i = 0; i < b_read; i++) {
-                dmd_rs232_rx(tx_buf[i] & 0xff);
-            }
-        }
-    }
-
-    while (dmd_rs232_tx(&txc) == 0) {
-        if (write(tty_fd, &txc, 1) < 0) {
-            fprintf(stderr, "error %d during write: %s\n", errno, strerror(errno));
-        }
-    }
+    do {
+        n = 0;
+        while (n < TX_BUF_LEN && dmd_rs232_tx(&txc) == 0)
+            buf[n++] = txc;
+        if (n > 0)
+            host->write(buf, n);
+    } while (n == TX_BUF_LEN);
 }
 
 /* Integer scale: crisp pixels. Otherwise smooth them. */
@@ -443,10 +264,15 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
     uint8_t c = 0;
     SDL_Keycode code = event->keysym.sym;
 
-    /* Command key combinations belong to the Mac, not to the DMD.
-     * Cmd-V pastes the clipboard as typed text. */
-    if (event->keysym.mod & KMOD_GUI) {
-        if (code == SDLK_v && SDL_HasClipboardText()) {
+    /* Paste the clipboard as typed text: Cmd-V on the Mac; Shift-Insert
+     * or Ctrl-Shift-V elsewhere. Other Cmd / Windows key combinations
+     * belong to the host, not to the DMD. */
+    bool paste = ((event->keysym.mod & KMOD_GUI) && code == SDLK_v) ||
+                 ((event->keysym.mod & KMOD_SHIFT) && code == SDLK_INSERT) ||
+                 ((event->keysym.mod & KMOD_CTRL) && (event->keysym.mod & KMOD_SHIFT) &&
+                  code == SDLK_v);
+    if (paste) {
+        if (SDL_HasClipboardText()) {
             char *text = SDL_GetClipboardText();
             if (text) {
                 ctl_paste(text);
@@ -455,6 +281,8 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
         }
         return;
     }
+    if (event->keysym.mod & KMOD_GUI)
+        return;
 
     switch (code) {
     case SDLK_F1:
@@ -737,7 +565,7 @@ static void handle_events(bool *need_present) {
 }
 
 void sdl_main_loop() {
-    uint64_t previous_ms = ctl_now_ms();
+    uint64_t previous_ms = plat_ms();
     uint64_t next_frame = previous_ms;
     bool need_present = true;
 
@@ -748,10 +576,9 @@ void sdl_main_loop() {
         if (!running)
             break;
 
-        uint64_t now = ctl_now_ms();
+        uint64_t now = plat_ms();
 
-        if (mcp_on)
-            ctl_service(now);
+        ctl_service(now); /* MCP requests, pasted text */
 
         if (!headless) {
             bool redraw = ctl_take_redraw();
@@ -768,10 +595,7 @@ void sdl_main_loop() {
         /*
          * Poll for serial i/o
          */
-        if (tty_fd < 0)
-            pty_io_poll();
-        else
-            tty_io_poll();
+        host_io_poll();
 
         /* TODO: We need to produce a beep sound here, just like the
          * original terminal did. We also need a way to turn that off if a
@@ -789,11 +613,9 @@ void sdl_main_loop() {
 
         /* Wait for the next frame (about 60 per second) */
         next_frame += FRAME_MS;
-        now = ctl_now_ms();
+        now = plat_ms();
         if (next_frame > now) {
-            uint64_t wait = next_frame - now;
-            struct timespec ts = {0, (long)(wait * 1000000)};
-            nanosleep(&ts, NULL);
+            plat_sleep_ms((unsigned)(next_frame - now));
         } else if (now - next_frame > 100) {
             next_frame = now; /* we fell behind; do not try to catch up */
         }
@@ -811,7 +633,7 @@ void sdl_teardown() {
         ctl_stop();
 
     if (nvram && dmd_get_nvram(buf) == 0) {
-        fp = fopen(nvram, "w+");
+        fp = fopen(nvram, "wb");
         if (fp == NULL) {
             fprintf(stderr, "Could not open %s for writing. Skipping\n", nvram);
         } else {
@@ -833,15 +655,17 @@ void sdl_teardown() {
     }
 }
 
-int main(int argc, char **argv, char **envp) {
+int main(int argc, char **argv) {
     int c, errflg = 0;
 
     char *shell = NULL;
     char *device = NULL;
+    char *netaddr = NULL;
+    bool telnet = false;
+    int baud = 9600;
     char *firmware = NULL;
     char *vm_name = NULL;
-    int size;
-    struct stat sb;
+    long size;
     char connection[300];
     uint8_t fw_version;
 
@@ -851,14 +675,12 @@ int main(int argc, char **argv, char **envp) {
     bool inherit = false; /* Inherit parent environment */
 
     int option_index = 0;
-    extern char *optarg;
-    extern int optind, optopt;
 
-    snprintf(VERSION_STRING, 64, "%d.%d.%d-mcp", VERSION_MAJOR, VERSION_MINOR,
-             VERSION_BUILD);
+    plat_init();
+    snprintf(VERSION_STRING, 64, "%d.%d.%d", VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD);
 
-    while ((c = getopt_long(argc, argv, "hivbd:n:t:p:s:f:", long_options,
-                            &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "hivbd:n:t:s:f:", long_options, &option_index)) !=
+           -1) {
         switch (c) {
         case 0:
             break;
@@ -883,6 +705,17 @@ int main(int argc, char **argv, char **envp) {
         case 'd':
             device = optarg;
             break;
+        case 't':
+            netaddr = optarg;
+            telnet = true;
+            break;
+        case OPT_TCP:
+            netaddr = optarg;
+            telnet = false;
+            break;
+        case OPT_BAUD:
+            baud = atoi(optarg);
+            break;
         case 'f':
             firmware = optarg;
             break;
@@ -901,7 +734,7 @@ int main(int argc, char **argv, char **envp) {
             window_scale = atof(optarg);
             if (window_scale < 0.25 || window_scale > 8) {
                 fprintf(stderr, "--scale must be between 0.25 and 8\n");
-                return -1;
+                return 1;
             }
             break;
         case '?':
@@ -910,9 +743,9 @@ int main(int argc, char **argv, char **envp) {
         }
     }
 
-    if (errflg) {
+    if (errflg || optind < argc) {
         usage();
-        return -1;
+        return 1;
     }
 
     if (getenv("DMD_HEADLESS") && strcmp(getenv("DMD_HEADLESS"), "0"))
@@ -922,17 +755,22 @@ int main(int argc, char **argv, char **envp) {
     if (!vm_name && getenv("DMD_NAME"))
         vm_name = getenv("DMD_NAME");
 
-    if (shell != NULL && device != NULL) {
-        fprintf(stderr,
-                "Cannot specify both --shell or --device. Only one is allowed.\n");
-        return -1;
+    if ((shell != NULL) + (device != NULL) + (netaddr != NULL) > 1) {
+        fprintf(stderr, "Give only one of --shell, --device, --telnet and --tcp.\n");
+        return 1;
     }
 
-    if (shell == NULL && device == NULL) {
-        shell = getenv("SHELL");
-        if (shell == NULL || shell[0] == 0)
-            shell = "/bin/sh";
+#ifdef _WIN32
+    if (shell == NULL && device == NULL && netaddr == NULL) {
+        fprintf(stderr, "Give a host connection: --telnet HOST[:PORT], --tcp HOST:PORT or "
+                        "--device COMn.\n\n");
+        usage();
+        return 1;
     }
+#else
+    if (shell == NULL && device == NULL && netaddr == NULL)
+        shell = (char *)host_default_shell();
+#endif
 
     /* Initialize the CPU */
     if (firmware == NULL || strncmp(FIRMWARE_875, firmware, 5) == 0) {
@@ -944,43 +782,37 @@ int main(int argc, char **argv, char **envp) {
     } else {
         fprintf(stderr, "--firmware must be one of either \"%s\" or \"%s\".\n",
                 FIRMWARE_873, FIRMWARE_875);
-        return -1;
+        return 1;
     }
 
     signal(SIGINT, int_handler);
     signal(SIGTERM, int_handler);
+#ifdef SIGCHLD
     signal(SIGCHLD, int_handler);
-    signal(SIGPIPE, SIG_IGN);
+#endif
 
-    if (device == NULL) {
-        if (stat(shell, &sb) != 0 || (sb.st_mode & S_IXUSR) == 0) {
-            fprintf(stderr, "Cannot open %s as shell, or file is not executable.\n",
-                    shell);
-            return -1;
-        }
-
-        pty_init(shell, shell_env(inherit, envp, shell));
+    if (shell != NULL) {
+        if (!host_open_shell(shell, inherit))
+            return 1;
         snprintf(connection, sizeof(connection), "shell %s", shell);
+    } else if (device != NULL) {
+        if (!host_open_serial(device, baud))
+            return 1;
+        snprintf(connection, sizeof(connection), "serial %s %d baud", device, baud);
     } else {
-        if (stat(device, &sb) != 0) {
-            fprintf(stderr, "Cannot open device %s.\n", device);
-            exit(1);
-        }
-        tty_fd = open(device, O_RDWR | O_NOCTTY | O_SYNC);
-        if (tty_fd < 0) {
-            fprintf(stderr, "error %d opening %s: %s\n", errno, device, strerror(errno));
-            return -1;
-        }
-
-        tty_init(tty_fd);
-        snprintf(connection, sizeof(connection), "device %s", device);
+        if (!host_open_net(netaddr, telnet))
+            return 1;
+        snprintf(connection, sizeof(connection), "%s %s", telnet ? "telnet" : "tcp", netaddr);
     }
 
+    /* Emulated time comes from the instruction count: 72 ns each, the
+     * rate the main loop runs the CPU at (13,888 per ms). */
+    dmd_set_ns_per_step(72);
     dmd_init(fw_version);
 
     /* Load NVRAM, if any */
     if (nvram != NULL) {
-        fp = fopen(nvram, "r");
+        fp = fopen(nvram, "rb");
 
         /* If there's no file yet, don't load anything. */
         if (fp != NULL) {
@@ -1022,8 +854,8 @@ int main(int argc, char **argv, char **envp) {
 
     sdl_teardown();
 
-    if (shell_pid > 0)
-        kill(shell_pid, SIGHUP);
+    host->close();
+    host_hangup();
 
     return EXIT_SUCCESS;
 }

@@ -1,6 +1,7 @@
 /*
  * MCP bridge: `dmd5620 --mcp-bridge` is a stdio MCP server. It finds
- * the running emulators (sockets in /tmp/dmd5620-$UID) and passes each
+ * the running emulators (local sockets in /tmp/dmd5620-$UID, or
+ * %TEMP%\dmd5620 on Windows) and passes each
  * tool call to the one named in `vm`.
  *
  * MIT license, same as the rest of the SDL DMD 5620 emulator.
@@ -8,21 +9,16 @@
 
 #include "ctl.h"
 #include "json.h"
+#include "plat.h"
 #include "version.h"
 
-#include <errno.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/un.h>
-#include <unistd.h>
 
 #define S(x) #x
 #define XS(x) S(x)
-#define BRIDGE_VERSION XS(VERSION_MAJOR) "." XS(VERSION_MINOR) "." XS(VERSION_BUILD) "-mcp"
+#define BRIDGE_VERSION XS(VERSION_MAJOR) "." XS(VERSION_MINOR) "." XS(VERSION_BUILD)
 
 static const char *INSTRUCTIONS =
     "You operate an emulated AT&T / Teletype DMD 5620 terminal: a portrait "
@@ -207,7 +203,6 @@ static bool pick_vm(const jnode *args, vm_entry *out, sbuf *err) {
 static void call_vm(const jnode *id, const char *tool, const jnode *args) {
     vm_entry vm;
     sbuf err, req, resp;
-    struct sockaddr_un sa;
     char buf[65536];
 
     sb_init(&err);
@@ -219,24 +214,14 @@ static void call_vm(const jnode *id, const char *tool, const jnode *args) {
         goto done;
     }
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    memset(&sa, 0, sizeof(sa));
-    sa.sun_family = AF_UNIX;
-    snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", vm.path);
-    if (fd < 0 || connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+    sock_t fd = sock_connect_local(vm.path);
+    if (fd == SOCK_BAD) {
         sb_printf(&err, "Cannot reach emulator %s (pid %d): %s", vm.name, vm.pid,
-                  strerror(errno));
+                  sock_error());
         tool_text(id, err.buf, true);
-        if (fd >= 0)
-            close(fd);
         goto done;
     }
-    struct timeval tv = {660, 0}; /* the longest tool call can wait 10 minutes */
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-#ifdef SO_NOSIGPIPE
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
+    sock_set_timeout(fd, 660000); /* the longest tool call can wait 10 minutes */
 
     sb_puts(&req, "{\"tool\":");
     sb_json_str(&req, tool);
@@ -247,19 +232,14 @@ static void call_vm(const jnode *id, const char *tool, const jnode *args) {
         sb_puts(&req, "{}");
     sb_puts(&req, "}\n");
 
-    for (size_t off = 0; off < req.len;) {
-        ssize_t n = write(fd, req.buf + off, req.len - off);
-        if (n <= 0)
-            break;
-        off += (size_t)n;
-    }
+    sock_send_all(fd, req.buf, req.len);
     for (;;) {
-        ssize_t n = read(fd, buf, sizeof(buf));
+        int n = sock_recv(fd, buf, sizeof(buf));
         if (n <= 0)
             break;
         sb_putn(&resp, buf, (size_t)n);
     }
-    close(fd);
+    sock_close(fd);
 
     jnode *r = resp.len ? json_parse(resp.buf, strcspn(resp.buf, "\n")) : NULL;
     if (!r) {
@@ -343,18 +323,45 @@ static void handle(const char *line, size_t len) {
     json_free(msg);
 }
 
-int mcp_bridge_main(void) {
-    char *line = NULL;
-    size_t cap = 0;
-    ssize_t n;
-
-    signal(SIGPIPE, SIG_IGN);
-    while ((n = getline(&line, &cap, stdin)) > 0) {
-        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
-            line[--n] = 0;
-        if (n > 0)
-            handle(line, (size_t)n);
+/* One line from stdin, without the line end. NULL at the end. */
+static char *read_line(size_t *len) {
+    static char *line;
+    static size_t cap;
+    size_t n = 0;
+    int c;
+    while ((c = getchar()) != EOF && c != '\n') {
+        if (n + 1 >= cap) {
+            size_t nc = cap ? cap * 2 : 4096;
+            char *nl = realloc(line, nc);
+            if (!nl)
+                return NULL;
+            line = nl;
+            cap = nc;
+        }
+        line[n++] = (char)c;
     }
-    free(line);
+    if (c == EOF && n == 0)
+        return NULL;
+    while (n > 0 && line[n - 1] == '\r')
+        n--;
+    if (!line) {
+        line = malloc(1);
+        if (!line)
+            return NULL;
+        cap = 1;
+    }
+    line[n] = 0;
+    *len = n;
+    return line;
+}
+
+int mcp_bridge_main(void) {
+    char *line;
+    size_t n;
+
+    while ((line = read_line(&n)) != NULL) {
+        if (n > 0)
+            handle(line, n);
+    }
     return 0;
 }

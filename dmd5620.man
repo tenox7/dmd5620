@@ -1,16 +1,26 @@
-.TH dmd5620 1 "21 Jan 2025" "0.1.0" "AT&T DMD 5620 Terminal Emulator"
+.TH dmd5620 1 "24 Nov 2026" "0.2.0" "AT&T DMD 5620 Terminal Emulator"
 .SH NAME
 dmd5620 \- AT&T DMD 5620 Terminal Emulator
 .SH SYNOPSIS
 .B dmd5620
-[\fB\--help\fR]
-[\fB\--version\fR]
-[\fB\--shell\fR \fISHELL\fR|\fB\--device\fR \fIDEVICE\fR]
-[\fB\--nvram\fR \fIFILE\fR]
-[\fB\--firmware\fR \fI"VERSION"\fR]
+[\fB\-\-firmware\fR \fI"VERSION"\fR]
+[\fB\-\-nvram\fR \fIFILE\fR]
+[\fB\-\-scale\fR \fIN\fR]
+[\fB\-\-headless\fR]
+[\fB\-\-name\fR \fINAME\fR]
+[\fB\-\-no\-mcp\fR]
+[\fB\-\-shell\fR \fISHELL\fR |
+\fB\-\-device\fR \fIDEVICE\fR [\fB\-\-baud\fR \fIN\fR] |
+\fB\-\-telnet\fR \fIHOST\fR[:\fIPORT\fR] |
+\fB\-\-tcp\fR \fIHOST\fR:\fIPORT\fR]
+.br
+.B dmd5620 \-\-mcp\-bridge
 .SH DESCRIPTION
 .B dmd5620
-AT&T DMD 5620 Terminal emulator with support for XT layers protocol.
+emulates the AT&T / Teletype DMD 5620 bitmap terminal, with its original
+firmware, and supports the System V \fIlayers\fR protocol. It also has an
+MCP server, so that an AI agent can see the screen and use the keyboard
+and the mouse.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help
@@ -19,20 +29,53 @@ Displays help and exits.
 .BR \-v ", " \-\-version
 Displays version and exits.
 .TP
-.BR \-s ", " \-\-shell " " \fISHELL\fR
-Execute the program \fISHELL\fR, e.g. "/bin/sh".
-.TP
-.BR \-d ", " \-\-device " " \fIDEVICE\fR
-Connect to physical device \fIDEVICE\fR, e.g. "/dev/ttyS0" or
-"/dev/pts/1".
-.TP
-.BR \-n ", " \-\-nvram  " " \fIFILE\fR
-Store NVRAM state in file \fIFILE\fR. No default.
-.TP
 .BR \-f ", " \-\-firmware " " \fI"VERSION"\fR
-Select firmare version. \fI"VERSION"\fR is a string, and must
+Select the firmware version. \fI"VERSION"\fR is a string, and must
 be one of either \fB"8;7;3"\fR or \fB"8;7;5"\fR. The default version
 if not specified is \fB"8;7;5"\fR.
+.TP
+.BR \-n ", " \-\-nvram " " \fIFILE\fR
+Store NVRAM state in file \fIFILE\fR. No default.
+.TP
+.BR \-\-scale " " \fIN\fR
+Window size: 1 is 800x1024. The default is the biggest size that fits
+the screen.
+.TP
+.BR \-\-headless
+No window. The MCP tools still see the screen.
+.TP
+.BR \-\-name " " \fINAME\fR
+The name of this terminal in the MCP tools. The default is \fBdmd5620\fR.
+.TP
+.BR \-\-no\-mcp
+Do not open the MCP control socket.
+.TP
+.BR \-\-mcp\-bridge
+Run as the MCP server on standard input and output. It finds the running
+emulators and passes each tool call to one of them.
+.SH HOST CONNECTION
+Give one of these. The default is a shell.
+.TP
+.BR \-s ", " \-\-shell " " \fISHELL\fR
+Run the program \fISHELL\fR, e.g. "/bin/sh", on a pseudo terminal. The
+default is \fB$SHELL\fR, else the login shell. The shell gets
+\fBTERM=dmd\fR and a small clean environment. Not on Windows.
+.TP
+.BR \-i ", " \-\-inherit
+Give the shell the whole environment of \fBdmd5620\fR.
+.TP
+.BR \-d ", " \-\-device " " \fIDEVICE\fR
+Connect to the serial port \fIDEVICE\fR, e.g. "/dev/ttyS0" or "COM1".
+.TP
+.BR \-\-baud " " \fIN\fR
+The speed of the serial port. The default is 9600.
+.TP
+.BR \-t ", " \-\-telnet " " \fIHOST\fR[:\fIPORT\fR]
+Connect to a telnet server. The default port is 23. The terminal type is
+\fBDMD\fR and the window size is 88x70.
+.TP
+.BR \-\-tcp " " \fIHOST\fR:\fIPORT\fR
+Connect to a raw TCP port, without the telnet protocol.
 .SH KEYMAP
 .TP
 .BR F1\-F8
@@ -44,22 +87,17 @@ Terminal SETUP key
 .BR SHIFT\+F9
 Terminal RESET key
 .TP
-.SH CONNECTING TO VIRTUAL SERIAL PORTS
-The \fB\-\-device\fR option can be used with \fBsocat\fR to set up a
-virtual serial port to a SIMH instance. For example:
+.BR Cmd\+V " (Mac), " Shift\+Insert ", " Ctrl\+Shift\+V
+Type the text of the clipboard
+.SH CONNECTING TO A SIMULATED 3B2
+The OpenSIMH 3B2 simulator gives its serial lines as telnet ports. For
+example, after \fBATTACH CONTTY 9100\fR in the simulator:
 .P
 .EX
-# socat -d TCP:192.168.80.100:8888 \\
-    pty,raw,echo=0,mode=660,link=/dev/ttyDMD 
+$ dmd5620 \-\-telnet localhost:9100
 .EE
-.P
-This command on Linux will open a virtual serial port connected to
-\fB192.168.80.100\fR on port \fB8888\fR. The port device will be available as
-\fB/dev/ttyDMD\fR, and the \fB\-\-device\fR flag can then be used to connect to
-this virtual serial port, provided that the terminal emulator user has been
-given permission to the correct TTY group.
 .SH USING SVR3 LAYERS
-One of the primary featuers of dmd5620 is support for the System V Release 3
+One of the primary features of dmd5620 is support for the System V Release 3
 \fIlayers\fR program. Real DMD5620 terminals were hard-wired directly
 to hosts using serial ports, and have no notion of networks.
 .PP
@@ -75,12 +113,12 @@ Options", either with the mouse or by pressing F2. Next, select toggle
 escaped.
 .SH SAVING NVRAM
 All terminal settings are forgotten on shutdown. To save terminal
-settings, the contents of NVRAM must be stored in a file using 
+settings, the contents of NVRAM must be stored in a file using
 the \fB\-\-nvram\fR flag.
 .PP
 \fINote that the NVRAM format is different between firmware versions!\fR
-Using the same NVRAM file on an \fB8;7;5\fR firmware terminal 
-and an \fB8;7;3\fR firwmare terminal is NOT SUPPORTED and will result
+Using the same NVRAM file on an \fB8;7;5\fR firmware terminal
+and an \fB8;7;3\fR firmware terminal is NOT SUPPORTED and will result
 in undesirable behavior!
 .SH KNOWN ISSUES
 .IP \(bu 3
@@ -89,6 +127,4 @@ real or simulated 3B2 using AT&T/WINS TCP/IP.  This is a limitation of the
 AT&T/WINS TCP/IP package, and not of the DMD 5620 terminal emulator. This can
 be worked around by connecting to a simulated serial port (e.g. Console,
 Contty, or PORTS) listening for network connections.
-.IP \(bu 3
-Using the terminal reset key (\fISHIFT+F9\fI) can lead to a hang in self test.
 .RE

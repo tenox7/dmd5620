@@ -2,7 +2,8 @@
  * Control socket: lets the MCP bridge (dmd5620 --mcp-bridge) drive a
  * running emulator: screenshots, keyboard, mouse.
  *
- * One Unix socket per emulator in /tmp/dmd5620-$UID (mode 0700).
+ * One local (AF_UNIX) socket per emulator in /tmp/dmd5620-$UID (mode
+ * 0700), or %TEMP%\dmd5620 on Windows.
  * Protocol: the client sends one JSON line {"tool": NAME, "args": {...}}
  * and gets one JSON line back: {"ok": bool, "text": "...", "png": "<base64>"}.
  *
@@ -18,21 +19,16 @@
 #include "json.h"
 #include "png.h"
 
+#include "plat.h"
+
+#include <SDL.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
-#include <pthread.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/un.h>
-#include <time.h>
-#include <unistd.h>
 
 extern volatile bool running;
 
@@ -68,8 +64,8 @@ typedef struct {
     int mx, my, buttons;
 } req_t;
 
-static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+static SDL_mutex *mu;
+static SDL_cond *cv;
 static req_t *pending; /* guarded by mu */
 static bool redraw;    /* guarded by mu */
 
@@ -83,19 +79,12 @@ static uint64_t paste_next;
 
 static ctl_info info;
 static char vm_name[64];
-static char sock_path[128];
-static int listen_fd = -1;
+static char sock_path[400];
+static sock_t listen_fd = SOCK_BAD;
 static uint64_t start_ms;
 
 uint64_t ctl_now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
-}
-
-const char *ctl_socket_dir(char *buf, size_t n) {
-    snprintf(buf, n, "/tmp/dmd5620-%u", (unsigned)getuid());
-    return buf;
+    return plat_ms();
 }
 
 /* ------------------------------------------------------------------ */
@@ -248,17 +237,21 @@ static void service_paste(uint64_t now) {
 }
 
 bool ctl_take_redraw(void) {
-    pthread_mutex_lock(&mu);
+    if (!mu)
+        return false;
+    SDL_LockMutex(mu);
     bool r = redraw;
     redraw = false;
-    pthread_mutex_unlock(&mu);
+    SDL_UnlockMutex(mu);
     return r;
 }
 
 void ctl_service(uint64_t now) {
     service_paste(now);
+    if (!mu)
+        return; /* no MCP: only the paste */
 
-    pthread_mutex_lock(&mu);
+    SDL_LockMutex(mu);
     req_t *r = pending;
     if (r && !r->done && now >= r->resume_at) {
         while (r->pc < r->n) {
@@ -321,10 +314,10 @@ void ctl_service(uint64_t now) {
         r->my = mouse_y;
         r->buttons = mouse_buttons;
         r->done = true;
-        pthread_cond_broadcast(&cv);
+        SDL_CondBroadcast(cv);
     }
 out:
-    pthread_mutex_unlock(&mu);
+    SDL_UnlockMutex(mu);
 }
 
 /* ------------------------------------------------------------------ */
@@ -366,29 +359,21 @@ static int total_wait_ms(const req_t *r) {
 
 /* Hands the request to the main loop and waits for it. */
 static bool run_req(req_t *r) {
-    struct timeval tv;
-    struct timespec ts;
-    int ms = total_wait_ms(r) + 10000;
+    uint64_t deadline = plat_ms() + (uint64_t)total_wait_ms(r) + 10000;
 
-    gettimeofday(&tv, NULL);
-    ts.tv_sec = tv.tv_sec + ms / 1000;
-    ts.tv_nsec = (long)tv.tv_usec * 1000 + (long)(ms % 1000) * 1000000;
-    if (ts.tv_nsec >= 1000000000) {
-        ts.tv_sec++;
-        ts.tv_nsec -= 1000000000;
-    }
-
-    pthread_mutex_lock(&mu);
+    SDL_LockMutex(mu);
     r->resume_at = 0;
     r->done = false;
     pending = r;
     while (!r->done) {
-        if (pthread_cond_timedwait(&cv, &mu, &ts) == ETIMEDOUT)
+        uint64_t now = plat_ms();
+        if (now >= deadline)
             break;
+        SDL_CondWaitTimeout(cv, mu, (Uint32)(deadline - now));
     }
     bool ok = r->done;
     pending = NULL;
-    pthread_mutex_unlock(&mu);
+    SDL_UnlockMutex(mu);
     return ok;
 }
 
@@ -654,7 +639,7 @@ static bool do_tool(const char *tool, const jnode *args, sbuf *text, char **png)
                       "window: %s\nuptime: %llu s\nscreen: 800x1024, 1 bit, "
                       "origin top-left\nmouse: %d,%d, buttons down: %s\n"
                       "cpu pc: 0x%08x\nsocket: %s",
-                      vm_name, (int)getpid(), info.firmware, info.connection,
+                      vm_name, plat_pid(), info.firmware, info.connection,
                       info.headless ? "no (headless)" : "yes",
                       (unsigned long long)((ctl_now_ms() - start_ms) / 1000), r->mx, r->my,
                       btn_list(r->buttons, bl, sizeof(bl)), r->cpu_pc, sock_path);
@@ -670,24 +655,19 @@ static bool do_tool(const char *tool, const jnode *args, sbuf *text, char **png)
     return ok;
 }
 
-static void handle_conn(int fd) {
+static void handle_conn(sock_t fd) {
     sbuf in, out, text;
     char buf[4096];
     char *png = NULL;
-    struct timeval tv = {10, 0};
 
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-#ifdef SO_NOSIGPIPE
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
+    sock_set_timeout(fd, 10000);
 
     sb_init(&in);
     sb_init(&out);
     sb_init(&text);
 
     for (;;) {
-        ssize_t n = read(fd, buf, sizeof(buf));
+        int n = sock_recv(fd, buf, sizeof(buf));
         if (n <= 0)
             break;
         sb_putn(&in, buf, (size_t)n);
@@ -714,12 +694,7 @@ static void handle_conn(int fd) {
     }
     sb_puts(&out, "}\n");
 
-    for (size_t off = 0; off < out.len;) {
-        ssize_t n = write(fd, out.buf + off, out.len - off);
-        if (n <= 0)
-            break;
-        off += (size_t)n;
-    }
+    sock_send_all(fd, out.buf, out.len);
 
     free(png);
     sb_free(&in);
@@ -727,22 +702,20 @@ static void handle_conn(int fd) {
     sb_free(&text);
 }
 
-static void *ctl_thread(void *arg) {
+static int ctl_thread(void *arg) {
     (void)arg;
-    sigset_t set;
-    sigfillset(&set);
-    pthread_sigmask(SIG_BLOCK, &set, NULL); /* signals go to the main thread */
     for (;;) {
-        int fd = accept(listen_fd, NULL, NULL);
-        if (fd < 0) {
-            if (errno == EINTR || errno == ECONNABORTED)
-                continue;
-            break;
+        sock_t fd = sock_accept(listen_fd);
+        if (fd == SOCK_BAD) {
+            if (!running)
+                break;
+            plat_sleep_ms(10); /* EINTR, aborted connection */
+            continue;
         }
         handle_conn(fd);
-        close(fd);
+        sock_close(fd);
     }
-    return NULL;
+    return 0;
 }
 
 static bool name_ok(const char *s) {
@@ -756,9 +729,9 @@ static bool name_ok(const char *s) {
 }
 
 int ctl_list_vms(vm_entry *out, int max) {
-    char dir[64];
+    char dir[300];
     int n = 0;
-    ctl_socket_dir(dir, sizeof(dir));
+    plat_sock_dir(dir, sizeof(dir), false);
     DIR *d = opendir(dir);
     if (!d)
         return 0;
@@ -777,9 +750,9 @@ int ctl_list_vms(vm_entry *out, int max) {
         if (pid <= 0 || strlen(base) >= sizeof(out[n].name))
             continue;
         char path[sizeof(out[n].path)];
-        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
-        if (kill(pid, 0) < 0 && errno == ESRCH) {
-            unlink(path); /* left over from an emulator that died */
+        snprintf(path, sizeof(path), "%s" PLAT_SEP "%s", dir, e->d_name);
+        if (!plat_pid_alive(pid)) {
+            plat_remove(path); /* left over from an emulator that died */
             continue;
         }
         snprintf(out[n].name, sizeof(out[n].name), "%s", base);
@@ -796,30 +769,19 @@ static bool name_taken(const char *name) {
     vm_entry v[64];
     int n = ctl_list_vms(v, 64);
     for (int i = 0; i < n; i++) {
-        if (!strcmp(v[i].name, name) && v[i].pid != (int)getpid())
+        if (!strcmp(v[i].name, name) && v[i].pid != plat_pid())
             return true;
     }
     return false;
 }
 
 int ctl_start(const ctl_info *in) {
-    char dir[64];
-    struct stat st;
-    struct sockaddr_un sa;
+    char dir[300];
 
     info = *in;
     start_ms = ctl_now_ms();
-    ctl_socket_dir(dir, sizeof(dir));
-
-    if (mkdir(dir, 0700) < 0 && errno != EEXIST) {
-        fprintf(stderr, "mcp: cannot make %s: %s\n", dir, strerror(errno));
+    if (!plat_sock_dir(dir, sizeof(dir), true))
         return -1;
-    }
-    if (lstat(dir, &st) < 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
-        fprintf(stderr, "mcp: %s is not a folder of this user; MCP is off\n", dir);
-        return -1;
-    }
-    chmod(dir, 0700);
 
     const char *name = in->name ? in->name : "dmd5620";
     if (!name_ok(name)) {
@@ -827,46 +789,32 @@ int ctl_start(const ctl_info *in) {
         return -1;
     }
     if (!in->name && name_taken(name))
-        snprintf(vm_name, sizeof(vm_name), "%s-%d", name, (int)getpid());
+        snprintf(vm_name, sizeof(vm_name), "%s-%d", name, plat_pid());
     else
         snprintf(vm_name, sizeof(vm_name), "%s", name);
 
-    snprintf(sock_path, sizeof(sock_path), "%s/%s.%d.sock", dir, vm_name, (int)getpid());
-    if (strlen(sock_path) >= sizeof(sa.sun_path)) {
-        fprintf(stderr, "mcp: socket path too long: %s\n", sock_path);
+    snprintf(sock_path, sizeof(sock_path), "%s" PLAT_SEP "%s.%d.sock", dir, vm_name, plat_pid());
+    listen_fd = sock_listen_local(sock_path);
+    if (listen_fd == SOCK_BAD) {
+        sock_path[0] = 0;
         return -1;
     }
 
-    listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (listen_fd < 0) {
-        perror("mcp: socket");
-        return -1;
-    }
-    memset(&sa, 0, sizeof(sa));
-    sa.sun_family = AF_UNIX;
-    strcpy(sa.sun_path, sock_path);
-    unlink(sock_path);
-    if (bind(listen_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 || listen(listen_fd, 4) < 0) {
-        fprintf(stderr, "mcp: cannot listen on %s: %s\n", sock_path, strerror(errno));
-        close(listen_fd);
-        listen_fd = -1;
-        return -1;
-    }
-    chmod(sock_path, 0600);
-
-    pthread_t th;
-    if (pthread_create(&th, NULL, ctl_thread, NULL) != 0) {
-        fprintf(stderr, "mcp: cannot start the control thread\n");
+    mu = SDL_CreateMutex();
+    cv = SDL_CreateCond();
+    SDL_Thread *th = mu && cv ? SDL_CreateThread(ctl_thread, "mcp", NULL) : NULL;
+    if (!th) {
+        fprintf(stderr, "mcp: cannot start the control thread: %s\n", SDL_GetError());
         ctl_stop();
         return -1;
     }
-    pthread_detach(th);
+    SDL_DetachThread(th);
     fprintf(stderr, "MCP: VM \"%s\" on %s\n", vm_name, sock_path);
     return 0;
 }
 
 void ctl_stop(void) {
     if (sock_path[0])
-        unlink(sock_path);
+        plat_remove(sock_path);
     sock_path[0] = 0;
 }

@@ -1,0 +1,161 @@
+# Build and test on every platform. A tag v* also makes a draft release
+# with all the binaries.
+name: build
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SDL_VER: 2.32.10
+  SDL_MINGW_SHA256: 83a5d74012311edc3c0d40ea6faecbe57ad692aa033fa5dc273cc937e3938ff2
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+      - name: Build
+        run: make -j4 WERROR=1
+      - name: Test
+        run: |
+          python3 test/smoke.py ./dmd5620
+          python3 test/smoke.py ./dmd5620 "8;7;3"
+      - name: Package
+        run: |
+          v=$(awk '/VERSION_(MAJOR|MINOR|BUILD)/ {v = v (v ? "." : "") $3} END {print v}' src/version.h)
+          d=dmd5620-$v-linux-${{ matrix.arch }}
+          mkdir -p dist/$d
+          strip dmd5620
+          cp dmd5620 README.md MCP.md LICENSE.md dist/$d/
+          cp dmd5620.man dist/$d/dmd5620.1
+          cp assets/dmd5620.png assets/dmd5620.svg assets/com.loomcom.dmd5620.desktop dist/$d/
+          tar -C dist -czf dist/$d.tar.gz $d
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (universal, SDL2 static)
+        run: sh tools/release-macos.sh
+      - name: Test
+        run: |
+          python3 test/smoke.py ./dmd5620
+          python3 test/smoke.py ./dmd5620 "8;7;3"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: build/dist/*.zip
+
+  windows-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64 and SDL2
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+          mkdir -p build/dl
+          curl -fsSL -o build/dl/sdl2-mingw.tar.gz \
+            https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VER/SDL2-devel-$SDL_VER-mingw.tar.gz
+          echo "$SDL_MINGW_SHA256  build/dl/sdl2-mingw.tar.gz" | sha256sum -c -
+          tar -C build -xzf build/dl/sdl2-mingw.tar.gz
+          sdl=$PWD/build/SDL2-$SDL_VER/x86_64-w64-mingw32
+          sed -i "s|^prefix=.*|prefix=$sdl|" $sdl/bin/sdl2-config
+      - name: Build
+        run: |
+          make -j4 WERROR=1 STATIC=1 CC=x86_64-w64-mingw32-gcc \
+            SDL_CONFIG=$PWD/build/SDL2-$SDL_VER/x86_64-w64-mingw32/bin/sdl2-config
+          x86_64-w64-mingw32-strip dmd5620.exe
+      - name: Package
+        run: |
+          v=$(awk '/VERSION_(MAJOR|MINOR|BUILD)/ {v = v (v ? "." : "") $3} END {print v}' src/version.h)
+          d=dmd5620-$v-windows-x64
+          mkdir -p dist/$d
+          cp dmd5620.exe README.md MCP.md LICENSE.md dist/$d/
+          (cd dist && zip -qr $d.zip $d)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/*.zip
+
+  windows-test:
+    needs: windows-build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+      - name: Test
+        shell: bash
+        run: |
+          unzip -q dmd5620-*-windows-x64.zip
+          exe=$(ls -d dmd5620-*-windows-x64)/dmd5620.exe
+          python test/smoke.py "$exe"
+          python test/smoke.py "$exe" "8;7;3"
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test on FreeBSD 14.5
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.5"
+          usesh: true
+          prepare: pkg install -y gmake pkgconf sdl2 python3
+          run: |
+            set -e
+            gmake -j2 WERROR=1
+            python3 test/smoke.py ./dmd5620
+            v=$(awk '/VERSION_(MAJOR|MINOR|BUILD)/ {v = v (v ? "." : "") $3} END {print v}' src/version.h)
+            d=dmd5620-$v-freebsd-amd64
+            mkdir -p dist/$d
+            strip dmd5620
+            cp dmd5620 README.md MCP.md LICENSE.md dist/$d/
+            cp dmd5620.man dist/$d/dmd5620.1
+            tar -C dist -czf dist/$d.tar.gz $d
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-amd64
+          path: dist/*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows-test, freebsd]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "dmd5620 ${GITHUB_REF_NAME#v}" --notes "Binaries for macOS, Linux, FreeBSD and Windows." *

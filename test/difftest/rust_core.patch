@@ -1,0 +1,433 @@
+diff -ruN a/src/bus.rs b/src/bus.rs
+--- a/src/bus.rs
++++ b/src/bus.rs
+@@ -190,6 +190,18 @@
+         self.ram.as_slice(range)
+     }
+ 
++    pub fn ram_mut(&mut self) -> *mut u8 {
++        self.ram.as_mut_slice().as_mut_ptr()
++    }
++
++    pub fn bbram_mut(&mut self) -> *mut u8 {
++        self.bbram.as_mut_slice().as_mut_ptr()
++    }
++
++    pub fn vid_mut(&mut self) -> *mut u8 {
++        self.vid.as_mut_slice().as_mut_ptr()
++    }
++
+     pub fn video_ram_dirty(&self) -> bool {
+         self.video_ram_dirty
+     }
+diff -ruN a/src/dmd.rs b/src/dmd.rs
+--- a/src/dmd.rs
++++ b/src/dmd.rs
+@@ -154,11 +154,91 @@
+ }
+ 
+ //
++// Test hooks (difftest)
++//
++
++static PANIC_MSG: Mutex<String> = Mutex::new(String::new());
++
++fn dmd_guard() -> std::sync::MutexGuard<'static, Dmd> {
++    DMD.lock().unwrap_or_else(|e| e.into_inner())
++}
++
++#[no_mangle]
++pub extern "C" fn rs_set_time(ns: u64) {
++    crate::vclock::VNOW.store(ns, std::sync::atomic::Ordering::Relaxed);
++}
++
++#[no_mangle]
++pub extern "C" fn rs_recreate() {
++    {
++        let mut g = dmd_guard();
++        *g = Dmd::new();
++    }
++    DMD.clear_poison();
++    std::panic::set_hook(Box::new(|info| {
++        let mut m = PANIC_MSG.lock().unwrap_or_else(|e| e.into_inner());
++        *m = format!("{}", info);
++    }));
++}
++
++#[no_mangle]
++pub extern "C" fn rs_set_register(reg: u8, val: u32) {
++    dmd_guard().cpu.r[(reg & 0xf) as usize] = val;
++}
++
++#[no_mangle]
++pub extern "C" fn rs_get_regs(out: *mut u32) {
++    let g = dmd_guard();
++    for i in 0..16 {
++        unsafe {
++            *out.add(i) = g.cpu.r[i];
++        }
++    }
++}
++
++#[no_mangle]
++pub extern "C" fn rs_ram() -> *mut u8 {
++    dmd_guard().bus.ram_mut()
++}
++
++#[no_mangle]
++pub extern "C" fn rs_bbram() -> *mut u8 {
++    dmd_guard().bus.bbram_mut()
++}
++
++#[no_mangle]
++pub extern "C" fn rs_vid() -> *mut u8 {
++    dmd_guard().bus.vid_mut()
++}
++
++/// One step; 0 = ok, 1 = the core panicked (message in buf).
++#[no_mangle]
++pub extern "C" fn rs_step_checked(buf: *mut u8, len: usize) -> c_int {
++    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        dmd_guard().step();
++    }));
++    DMD.clear_poison();
++    match r {
++        Ok(()) => 0,
++        Err(_) => {
++            let m = PANIC_MSG.lock().unwrap_or_else(|e| e.into_inner());
++            let b = m.as_bytes();
++            let n = std::cmp::min(b.len(), len - 1);
++            unsafe {
++                std::ptr::copy_nonoverlapping(b.as_ptr(), buf, n);
++                *buf.add(n) = 0;
++            }
++            1
++        }
++    }
++}
++
++//
+ // Provide a C interface
+ //
+ 
+ #[no_mangle]
+-fn dmd_init(version: u8) -> c_int {
++pub extern "C" fn rs_dmd_init(version: u8) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => match dmd.reset(version) {
+             Ok(()) => SUCCESS,
+@@ -169,7 +249,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_video_ram() -> *const u8 {
++pub extern "C" fn rs_dmd_video_ram() -> *const u8 {
+     match DMD.lock() {
+         Ok(mut dmd) => dmd.video_ram().as_ptr(),
+         Err(_) => ptr::null(),
+@@ -177,7 +257,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_video_ram_dirty() -> c_int {
++pub extern "C" fn rs_dmd_video_ram_dirty() -> c_int {
+     match DMD.lock() {
+         Ok(dmd) => match dmd.video_ram_dirty() {
+             true => 1,
+@@ -188,7 +268,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_step() -> c_int {
++pub extern "C" fn rs_dmd_step() -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => {
+             dmd.step();
+@@ -199,7 +279,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_step_loop(steps: usize) -> c_int {
++pub extern "C" fn rs_dmd_step_loop(steps: usize) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => {
+             dmd.run(steps);
+@@ -210,7 +290,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_get_pc(pc: &mut u32) -> c_int {
++pub extern "C" fn rs_dmd_get_pc(pc: &mut u32) -> c_int {
+     match DMD.lock() {
+         Ok(dmd) => {
+             *pc = dmd.get_pc();
+@@ -221,7 +301,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_get_register(reg: u8, val: &mut u32) -> c_int {
++pub extern "C" fn rs_dmd_get_register(reg: u8, val: &mut u32) -> c_int {
+     match DMD.lock() {
+         Ok(dmd) => {
+             *val = dmd.get_register(reg);
+@@ -232,7 +312,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_read_word(addr: u32, val: &mut u32) -> c_int {
++pub extern "C" fn rs_dmd_read_word(addr: u32, val: &mut u32) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => match dmd.read_word(addr as usize) {
+             Some(word) => {
+@@ -246,7 +326,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_read_byte(addr: u32, val: &mut u8) -> c_int {
++pub extern "C" fn rs_dmd_read_byte(addr: u32, val: &mut u8) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => match dmd.read_byte(addr as usize) {
+             Some(byte) => {
+@@ -260,7 +340,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_get_duart_output_port(oport: &mut u8) -> c_int {
++pub extern "C" fn rs_dmd_get_duart_output_port(oport: &mut u8) -> c_int {
+     match DMD.lock() {
+         Ok(dmd) => {
+             *oport = dmd.duart_output();
+@@ -271,7 +351,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_mouse_move(x: u16, y: u16) -> c_int {
++pub extern "C" fn rs_dmd_mouse_move(x: u16, y: u16) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => {
+             dmd.mouse_move(x, y);
+@@ -282,7 +362,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_mouse_down(button: u8) -> c_int {
++pub extern "C" fn rs_dmd_mouse_down(button: u8) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => {
+             dmd.mouse_down(button);
+@@ -293,7 +373,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_mouse_up(button: u8) -> c_int {
++pub extern "C" fn rs_dmd_mouse_up(button: u8) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => {
+             dmd.mouse_up(button);
+@@ -304,7 +384,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_rs232_rx(c: u8) -> c_int {
++pub extern "C" fn rs_dmd_rs232_rx(c: u8) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => {
+             dmd.rs232_rx(c);
+@@ -315,7 +395,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_keyboard_rx(c: u8) -> c_int {
++pub extern "C" fn rs_dmd_keyboard_rx(c: u8) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => {
+             dmd.keyboard_rx(c);
+@@ -326,7 +406,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_rs232_tx(tx_char: &mut u8) -> c_int {
++pub extern "C" fn rs_dmd_rs232_tx(tx_char: &mut u8) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => match dmd.rs232_tx() {
+             Some(c) => {
+@@ -340,7 +420,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_keyboard_tx(tx_char: &mut u8) -> c_int {
++pub extern "C" fn rs_dmd_keyboard_tx(tx_char: &mut u8) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => match dmd.keyboard_tx() {
+             Some(c) => {
+@@ -354,7 +434,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_set_nvram(nvram: &[u8; 8192]) -> c_int {
++pub extern "C" fn rs_dmd_set_nvram(nvram: &[u8; 8192]) -> c_int {
+     match DMD.lock() {
+         Ok(mut dmd) => {
+             dmd.set_nvram(nvram);
+@@ -365,7 +445,7 @@
+ }
+ 
+ #[no_mangle]
+-fn dmd_get_nvram(nvram: &mut [u8; 8192]) -> c_int {
++pub extern "C" fn rs_dmd_get_nvram(nvram: &mut [u8; 8192]) -> c_int {
+     match DMD.lock() {
+         Ok(dmd) => {
+             nvram.clone_from_slice(dmd.get_nvram());
+diff -ruN a/src/duart.rs b/src/duart.rs
+--- a/src/duart.rs
++++ b/src/duart.rs
+@@ -45,8 +45,7 @@
+ use std::fmt::Error;
+ use std::fmt::Formatter;
+ use std::ops::Range;
+-use std::time::Duration;
+-use std::time::Instant;
++use crate::vclock::now;
+ 
+ const START_ADDR: usize = 0x200000;
+ const END_ADDR: usize = 0x2000040;
+@@ -155,9 +154,9 @@
+     rx_deque: VecDeque<u8>,
+     tx_deque: VecDeque<u8>,
+     // Service timing info
+-    char_delay: Duration,
+-    next_tx_service: Instant,
+-    next_rx_service: Instant,
++    char_delay: u64,
++    next_tx_service: u64,
++    next_rx_service: u64,
+ }
+ 
+ impl Port {
+@@ -173,9 +172,9 @@
+             tx_shift_reg: None,
+             rx_deque: VecDeque::new(),
+             tx_deque: VecDeque::new(),
+-            char_delay: Duration::new(0, 1_000_000),
+-            next_tx_service: Instant::now(),
+-            next_rx_service: Instant::now(),
++            char_delay: 1_000_000u64,
++            next_tx_service: now(),
++            next_rx_service: now(),
+         }
+     }
+ 
+@@ -253,7 +252,7 @@
+     fn rx_service(&mut self) {
+         let rx_service_needed = self.rx_enabled()
+             && !self.rx_deque.is_empty()
+-            && Instant::now() >= self.next_rx_service;
++            && now() >= self.next_rx_service;
+ 
+         if !rx_service_needed {
+             // Nothing to do.
+@@ -266,7 +265,7 @@
+             }
+         }
+ 
+-        self.next_rx_service = Instant::now() + self.char_delay;
++        self.next_rx_service = now() + self.char_delay;
+     }
+ 
+     /// Move the transmitter state machine.
+@@ -276,7 +275,7 @@
+             return;
+         }
+ 
+-        if Instant::now() >= self.next_tx_service {
++        if now() >= self.next_tx_service {
+             // Check for data in the transmitter shift register that's
+             // ready to go out to the RS232 output buffer
+             if let Some(c) = self.tx_shift_reg {
+@@ -306,7 +305,7 @@
+                 // Clear the holding register
+                 self.tx_holding_reg = None;
+                 // Ready for a new character
+-                self.next_tx_service = Instant::now() + self.char_delay;
++                self.next_tx_service = now() + self.char_delay;
+             }
+         }
+     }
+@@ -357,7 +356,7 @@
+     // which doesn't actually exist on the real duart. We should fix
+     // that, because DAMN.
+     ivec: u8,
+-    next_vblank: Instant,
++    next_vblank: u64,
+ }
+ 
+ impl Default for Duart {
+@@ -367,7 +366,7 @@
+ }
+ 
+ /// Compute the delay rate to wait for the next transmit or receive
+-fn delay_rate(csr_bits: u8, acr_bits: u8) -> Duration {
++fn delay_rate(csr_bits: u8, acr_bits: u8) -> u64 {
+     const NS_PER_SEC: u32 = 1_000_000_000;
+     const BITS_PER_CHAR: u32 = 8;
+ 
+@@ -378,7 +377,7 @@
+         BAUD_RATES_B[baud_bits]
+     };
+ 
+-    Duration::new(0, NS_PER_SEC / (baud_rate / BITS_PER_CHAR))
++    (NS_PER_SEC / (baud_rate / BITS_PER_CHAR)) as u64
+ }
+ 
+ impl Duart {
+@@ -392,13 +391,13 @@
+             isr: 0,
+             imr: 0,
+             ivec: 0,
+-            next_vblank: Instant::now() + Duration::new(0, VERTICAL_BLANK_DELAY),
++            next_vblank: now() + VERTICAL_BLANK_DELAY as u64,
+         }
+     }
+ 
+     pub fn get_interrupt(&mut self) -> Option<u8> {
+-        if Instant::now() > self.next_vblank {
+-            self.next_vblank = Instant::now() + Duration::new(0, VERTICAL_BLANK_DELAY);
++        if now() > self.next_vblank {
++            self.next_vblank = now() + VERTICAL_BLANK_DELAY as u64;
+             self.vertical_blank();
+         }
+ 
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -14,6 +14,7 @@
+ mod rom_hi;
+ mod rom_lo;
+ mod utils;
++pub mod vclock;
+ 
+ #[macro_use]
+ extern crate lazy_static;
+diff -ruN a/src/mem.rs b/src/mem.rs
+--- a/src/mem.rs
++++ b/src/mem.rs
+@@ -28,6 +28,10 @@
+         }
+     }
+ 
++    pub fn as_mut_slice(&mut self) -> &mut [u8] {
++        &mut self.ram
++    }
++
+     pub fn as_slice(&self, range: Range<usize>) -> &[u8] {
+         &self.ram[range]
+     }
+diff -ruN a/src/vclock.rs b/src/vclock.rs
+--- a/src/vclock.rs
++++ b/src/vclock.rs
+@@ -0,0 +1,5 @@
++use std::sync::atomic::{AtomicU64, Ordering};
++pub static VNOW: AtomicU64 = AtomicU64::new(0);
++pub fn now() -> u64 {
++    VNOW.load(Ordering::Relaxed)
++}

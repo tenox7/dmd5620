@@ -2,19 +2,21 @@
 
 The emulator has a built-in [MCP](https://modelcontextprotocol.io/) server.
 With it, an AI agent can use the terminal like a person: look at the
-screen, type, and use the mouse. It works on macOS and Linux.
+screen, type, and use the mouse. It works on macOS, Linux, FreeBSD and
+Windows 10 or later.
 
 ## How it works
 
 - **Every emulator offers MCP.** It is on by default. Each one opens a
-  socket in `/tmp/dmd5620-$UID/`, a folder only your user can open.
+  local socket in `/tmp/dmd5620-$UID/`, a folder only your user can open.
+  On Windows the folder is `%TEMP%\dmd5620`.
 - **`dmd5620 --mcp-bridge` is the MCP server** that your agent starts. It
   finds all running emulators and passes each tool call to the one you name.
 - **Emulators can come and go.** The bridge keeps running.
 
 ## Setup
 
-1. Build: `./build.sh` (see [README.md](README.md)).
+1. Get or build `dmd5620` (see [README.md](README.md)).
 2. Add the bridge to your agent once.
    - Claude Code: `claude mcp add dmd5620 -s user -- /path/to/dmd5620 --mcp-bridge`
    - Other MCP clients: a stdio server with that command.
@@ -60,6 +62,8 @@ Coordinates are screen pixels, origin top-left, in all tools.
   stays open.
 - **Keys go through the keyboard port** at its baud rate, like a real
   keyboard. `type-text` waits `delay-ms` (default 10) between characters.
-- **On a Mac,** Cmd-V pastes the clipboard as typed text. Other Cmd keys
-  stay with macOS (Cmd-Q quits).
+- **Paste:** Cmd-V on a Mac, Shift-Insert or Ctrl-Shift-V elsewhere,
+  types the clipboard. Other Cmd keys stay with macOS (Cmd-Q quits).
+- **Windows** needs Windows 10 version 1803 or later for the local
+  sockets. Wine does not have them, so MCP is off there.
 - The shell gets `TERM=dmd` and an 88x70 window size.

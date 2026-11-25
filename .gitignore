@@ -2,5 +2,6 @@
 *~
 .cache
 compile_commands.json
-dmd5620
+/dmd5620
+/dmd5620.exe
 build/

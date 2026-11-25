@@ -19,9 +19,6 @@ typedef struct {
     bool headless;
 } ctl_info;
 
-/* Socket directory, /tmp/dmd5620-$UID. Returns buf. */
-const char *ctl_socket_dir(char *buf, size_t n);
-
 /* Emulator side. ctl_service() and ctl_note_*() run on the main thread. */
 int ctl_start(const ctl_info *info);
 void ctl_service(uint64_t now_ms);
@@ -36,7 +33,7 @@ void ctl_paste(const char *text);
 typedef struct {
     char name[64];
     int pid;
-    char path[160];
+    char path[400];
 } vm_entry;
 int ctl_list_vms(vm_entry *out, int max);
 

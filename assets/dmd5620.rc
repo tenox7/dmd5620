@@ -1,0 +1,26 @@
+#include <winver.h>
+#include "../src/version.h"
+
+1 ICON "dmd5620.ico"
+
+1 VERSIONINFO
+FILEVERSION     VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD, 0
+PRODUCTVERSION  VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD, 0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "AT&T DMD 5620 terminal emulator"
+            VALUE "ProductName", "dmd5620"
+            VALUE "OriginalFilename", "dmd5620.exe"
+            VALUE "LegalCopyright", "MIT License"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

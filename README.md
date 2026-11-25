@@ -1,165 +1,160 @@
-# SDL DMD 5620 Emulator
+# DMD 5620 emulator
 
-This is an SDL2 implementation of an AT&T / Teletype DMD 5620 emulator.
+An emulator of the AT&T / Teletype DMD 5620, the commercial version of
+the Bell Labs Blit: a bitmap terminal with an 800x1024 one-bit portrait
+screen, a WE 32100 CPU, a keyboard and a three-button mouse. It runs the
+original firmware, versions 8;7;3 and 8;7;5.
 
-For additional information and documentation beyond this README file,
-please visit [https://loomcom.com/3b2/dmd5620-emulator/](https://loomcom.com/3b2/dmd5620-emulator/).
+It runs on macOS, Linux, FreeBSD and Windows. It needs only SDL2.
 
-## Status
+It also has a built-in [MCP](https://modelcontextprotocol.io/) server, so
+an AI agent can look at the screen and use the keyboard and the mouse.
+See [MCP.md](MCP.md).
 
-Version: 0.1.0
+This is a fork of Seth Morabito's
+[dmd_sdl](https://git.loomcom.com/seth/dmd_sdl). His emulator core,
+[dmd_core](https://git.loomcom.com/seth/dmd_core), is written in Rust.
+Here it is ported to plain C with the same C API (folder `core/`). A
+test runs both cores side by side and compares them after every
+instruction (see [Testing](#testing)). The C core is faster, and it has
+one fix, so firmware 8;7;3 works too.
 
-This is an actively developed project. Bug reports and feature enhancements are
-welcome.
+## Download
 
-## macOS and MCP
+Ready binaries are on the [Releases](../../releases) page:
 
-This copy builds on macOS too (`./build.sh`; Rust is installed into `./build`,
-nothing outside this folder). SDL2_gfx is no longer needed. It also has a
-built-in MCP server, so an AI agent can see the screen and use the keyboard
-and mouse: see [MCP.md](MCP.md).
+| File | For |
+|---|---|
+| `dmd5620-VERSION-macos.zip` | macOS 10.13 and later, Apple silicon and Intel |
+| `dmd5620-VERSION-linux-x86_64.tar.gz` | Linux on x86_64 (needs the SDL2 package) |
+| `dmd5620-VERSION-linux-arm64.tar.gz` | Linux on arm64 (needs the SDL2 package) |
+| `dmd5620-VERSION-freebsd-amd64.tar.gz` | FreeBSD 14 on amd64 (needs `pkg install sdl2`) |
+| `dmd5620-VERSION-windows-x64.zip` | Windows 10 and later, x64 (SDL2 is built in) |
 
-## Dependencies
-
-The executable has the following dependencies:
-
-* SDL2 (libSDL2)
-* zlib
-
-For building, a C99 compiler and the Rust toolchain (version 1.50 or
-later) are also required.
-
-## Building
-
-- Clone with `git clone --recursive` to make sure submodules are up to date,
-  *or* run `git submodule init; git submodule update`.
-- Ensure that the Rust toolchain is installed. This is most easily done using
-  the `rustup` installation script. For more information, see
-  https://rustlang.org/ and https://rustup.rs/
-- Type `make`
-
-## Usage
-
-### Running the Terminal
+## Use
 
 ```
-Usage: dmd5620 [-h] [-v] [-i] [-d DEV|-s SHELL] [-f VER] [-n FILE]
-AT&T DMD 5620 Terminal emulator.
-
--h, --help              display help and exit
--v, --version           display version and exit
--i, --inherit           inherit parent environment
--f, --firmware VER      Firmware version ("8;7;3" or "8;7;5")
--d, --device DEV        serial port name (e.g. "/dev/ttyUSB0")
--s, --shell SHELL       execute SHELL instead of default user shell
--n, --nvram FILE        store nvram state in FILE
+dmd5620 [-f VER] [-n FILE] [--scale N] [--headless] [--name NAME] [--no-mcp]
+        [-s SHELL | -d DEV [--baud N] | -t HOST[:PORT] | --tcp HOST:PORT]
 ```
 
-- `--help` displays the help shown above, and exits.
-- `--version` displays the executable version number, and exits.
-- `--inherit` inherit parent shell environment.
-- `--firmware VER` selects the firmware version to use. Older DMD
-   terminals used firmware version "8;7;3". Newer terminals used firmware
-   version "8;7;5". The version must be specified as a string, and is
-   "8;7;5" by default.
-- `--device DEV` will attach the terminal to the specified physical or 
-   virtual serial device (e.g. "/dev/ttyS0")
-- `--shell SHELL` will execute the specified shell (e.g. "/bin/sh")
-- `--nvram FILE` causes terminal parameters stored in non-volatile memory
-   to be persisted to `FILE`.
+The terminal must talk to a host. Give one of these:
 
-Example usage:
+| Option | Host |
+|---|---|
+| `-s SHELL`, `--shell` | A local shell on a pseudo terminal. This is the default, with your login shell. Not on Windows. |
+| `-d DEV`, `--device` | A serial port: `/dev/ttyUSB0`, `/dev/cu.usbserial-1`, `COM3`. `--baud N` sets the speed (default 9600). |
+| `-t HOST[:PORT]`, `--telnet` | A telnet server. The default port is 23. |
+| `--tcp HOST:PORT` | A raw TCP connection, with no telnet protocol. |
+
+Other options:
+
+| Option | What it does |
+|---|---|
+| `-f VER`, `--firmware` | Firmware `"8;7;3"` or `"8;7;5"` (default) |
+| `-n FILE`, `--nvram` | Keep the terminal's settings (its NVRAM) in FILE |
+| `-i`, `--inherit` | Give the shell your whole environment, not a small clean one |
+| `--scale N` | Window size; 1 is 800x1024. Default: the biggest size that fits the screen |
+| `--headless` | No window. MCP still sees the screen |
+| `--name NAME` | Name of this terminal in the MCP tools |
+| `--no-mcp` | No MCP control socket |
+
+Examples:
 
 ```
-$ dmd5620 --nvram ~/.dmd5620_nvram --shell /bin/sh
-$ dmd5620 --firmware "8;7;3" --nvram ~/.dmd5620_nvram --device /dev/ttyS0
+dmd5620 -n ~/.dmd5620_nvram
+dmd5620 -f "8;7;3" -d /dev/ttyS0 --baud 19200
+dmd5620 -t localhost:9100
 ```
 
-#### Using the Terminal with `socat`
+### Connect to a 3B2
 
-A major goal of this terminal emulator is to provide a way to interact with the
-[OpenSIMH 3B2 Emulator](https://loomcom.com/3b2/emulator/). An excellent way to
-accomplish this, if running BSD or Linux, is to use the `socat` program to
-forward a virtual serial port on the 3B2 simulator to a pty running on the host
-computer.
-
-First, you will need to configure the 3B2 emulator to use raw TCP instead of
-the Telnet protocol for its virtual serial connection by adding the `notelnet`
-option to the serial port configuration in OpenSIMH.  For example, changing
-from:
+The [OpenSIMH 3B2 emulator](https://loomcom.com/3b2/emulator/) gives its
+serial lines as telnet ports. In the 3B2 emulator:
 
 ```
 ATTACH CONTTY 9100
 ```
 
-to:
-
-
-```
-ATTACH CONTTY 9100;notelnet
-```
-
-Next, run `socat` and redirect TCP traffic from this port to a PTY:
+Then connect the DMD to it:
 
 ```
-sudo socat TCP:localhost:9100 pty,raw,echo=0,mode=660,link=/dev/ttyDMD
+dmd5620 -t localhost:9100
 ```
 
-This creates a pty at `/dev/ttyDMD` that the DMD5620 can use.
+A real 3B2 or other Unix host can use a serial port (`-d`), or telnet
+(`-t`). The emulator tells a telnet server that its terminal type is `DMD`
+and its size is 88x70.
 
-```
-dmd5620 -d /dev/ttyDMD [additional options ...]
-```
+### Keys
 
-Note that there may be permission issues accessing the device. Depending on the
-operating system you're using, you may need to add the user running `dmd5620`
-to a specific group with permission to read and write the pty device you've
-used with `socat`.
+| Key | DMD key |
+|---|---|
+| F1 to F8 | F1 to F8 |
+| F9 | Setup |
+| Shift+F9 | Reset |
+| Cmd+V (Mac), Shift+Insert, Ctrl+Shift+V | Paste the clipboard as typed text |
 
-### Configuration
+Press F9 (Setup) to change the settings: baud rate, screen colors, key
+click, and more. In firmware 8;7;3 use Tab or Backspace to move and Space
+to change a value. In firmware 8;7;5 use the function keys or the mouse.
 
-All configuration of the terminal is done by pressing the `F9` key, which shows
-a series of menu buttons at the bottom of the screen. These buttons reveal
-menus that allow you to set the baud rate, reverse the video colors, turn on
-and off the bell, and so forth.
+The shell gets `TERM=dmd`. Most terminfo databases have a `dmd` entry.
 
-In firmware version "8;7;3", these buttons are navigated by pressing TAB or
-BACKSPACE to move around, and pressing SPACE to change the values.
+The DMD manuals are at
+[archives.loomcom.com](https://archives.loomcom.com/3b2/documents/DMD_Terminal/).
+More about the original emulator is at
+[loomcom.com](https://loomcom.com/3b2/dmd5620-emulator/).
 
-In firmware version "8;7;5", the function keys or the mouse select and change
-the values.
+## Build
 
-Full documentation is available here: [https://archives.loomcom.com/3b2/documents/DMD_Terminal/](https://archives.loomcom.com/3b2/documents/DMD_Terminal/)
+You need a C99 compiler, GNU make, pkg-config and SDL2.
 
+| System | Packages | Build |
+|---|---|---|
+| macOS | `brew install sdl2 pkg-config` | `make` |
+| Debian, Ubuntu | `apt install build-essential pkg-config libsdl2-dev` | `make` |
+| Fedora | `dnf install gcc make pkgconf SDL2-devel` | `make` |
+| FreeBSD | `pkg install gmake pkgconf sdl2` | `gmake` |
+| Windows (MSYS2 UCRT64) | `pacman -S make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-SDL2` | `make` |
 
-## Key Map
+`make install` puts the program, the man page, the icons and the desktop
+file under `/usr/local` (set `PREFIX` for another place).
 
-Certain keys are mapped to special DMD5620 function keys.
+Other make settings:
 
-* F1-F8 are mapped directly to terminal F1-F8
-* F9 is mapped to the DMD5620's SETUP key.
-* Shift+F9 is mapped to the terminal's RESET functionality.
+- `make STATIC=1` links SDL2 statically.
+- `make SDL_CONFIG=/path/to/sdl2-config` uses that SDL2 and not the one
+  pkg-config finds.
+- `make CC=x86_64-w64-mingw32-gcc SDL_CONFIG=...` builds `dmd5620.exe`
+  on Linux or macOS with MinGW-w64 and the SDL2 MinGW package
+  (`SDL2-devel-2.x.x-mingw.tar.gz`).
 
-## Changelog
+## Testing
 
-### Version 0.1.0 (27 January, 2025)
+`test/difftest/run.sh` checks the C core against the Rust core. It gets
+dmd_core 0.7.2, adds the test hooks in `test/difftest/rust_core.patch`,
+and builds both into one program. Then it runs random instruction streams
+and boots both firmware versions. After every instruction it compares the
+registers and the I/O; it compares all memory every 65536 instructions.
+It needs git, cargo (Rust) and a C compiler.
 
-- Initial release, suitable for testing. This has been tested on Linux, but not
-  yet on any other operating system.
+## Notes
 
-## To Do
-
-- Local serial line support is not yet implemented.
-
-## See Also
-
-* [dmd_gtk](https://git.loomcom.com/seth/dmd_gtk): An implementation of
-  the emulator in GTK+ 3.0.
-* [dmd_core](https://git.loomcom.com/seth/dmd_core): DMD 5620 core
-  implementation library, used by this project.
+- Firmware 8;7;3 works here. In the Rust core it stops at "I/O TEST":
+  its DUART does not receive a break in loopback mode as a 2681 does, so
+  the power-on self test repeats forever. The C core has this fix;
+  `dmd_set_rust_compat(1)` turns it off.
+- On Windows there is no local shell, because Windows consoles do not
+  speak the DMD's terminal codes. Use telnet or a serial port.
 
 ## License
 
-MIT license. See the file [LICENSE.md](LICENSE.md)
+MIT. See [LICENSE.md](LICENSE.md).
 
-Copyright (c) 2025, Seth Morabito &lt;web@loomcom.com&gt;
+- Copyright 2018-2025 Seth J. Morabito: the original emulator and the
+  Rust core.
+- Copyright 2026 the dmd5620 authors: the C core and the changes in this
+  fork.
+
+The firmware ROM images in `core/rom.c` come from dmd_core.
