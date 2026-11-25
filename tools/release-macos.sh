@@ -1,7 +1,8 @@
 #!/bin/sh
 # Build the macOS release: one universal (arm64 + x86_64) binary with SDL2
 # linked in statically, as a plain zip (command line) and as DMD5620.app in
-# a DMG. Both have layers (git submodule dmd-layers), also universal.
+# a DMG. Both have layers (git submodule dmd-layers) and 32ld with the
+# demos (git submodule dev5620), also universal.
 # Work files go to build/, the results to build/dist/.
 #
 #   tools/release-macos.sh
@@ -60,27 +61,21 @@ if otool -L dmd5620 | grep "^	" | grep -v -E "/System/Library/|/usr/lib/"; then
     exit 1
 fi
 
-# layers: one build for each CPU, then lipo puts them together in layers/.
-[ -f dmd-layers/Makefile ] || git submodule update --init dmd-layers
+# layers, 32ld and the demos: one build for each CPU (make layers), then
+# lipo puts them together in layers/.
 LCFLAGS="-O -w -std=gnu89 -D_FORTIFY_SOURCE=0 -Wno-return-mismatch"
 rm -rf layers
 for a in arm64 x86_64; do
-    rm -rf "$B/layers-$a"
-    make -j1 -C dmd-layers clean >/dev/null 2>&1
-    make -j1 -C dmd-layers DMD="$B/layers-$a" EXTRACFLAGS="$LCFLAGS -arch $a" install \
-        >"$B/layers-$a.log" 2>&1 || true
-    for f in bin/layers bin/jwin bin/xtagent lib/layersys/movelogin; do
-        [ -x "$B/layers-$a/$f" ] || { echo "layers ($a): no $f, see $B/layers-$a.log"; exit 1; }
-    done
+    make layers LAYERS_OUT="$B/layers-$a" LAYERS_CFLAGS="$LCFLAGS -arch $a" \
+        >"$B/layers-$a.log" 2>&1 || { echo "layers ($a) failed, see $B/layers-$a.log"; exit 1; }
 done
 make -j1 -C dmd-layers clean >/dev/null 2>&1
 cp -R "$B/layers-arm64" layers
-rm -rf layers/xt
 for f in $(find layers -type f); do
     lipo -info "$f" >/dev/null 2>&1 || continue
     lipo -create "$B/layers-arm64/${f#layers/}" "$B/layers-x86_64/${f#layers/}" -output "$f"
 done
-lipo -info layers/bin/layers
+lipo -info layers/bin/layers layers/bin/32ld
 
 SIGN="-" TS=""
 [ -n "$DEV_ID" ] && SIGN=$DEV_ID TS="--timestamp"

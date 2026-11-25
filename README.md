@@ -124,6 +124,39 @@ Notes:
 - `who` does not show the windows: `layers` cannot write the login records
   without root.
 
+### Demos: programs that run in the DMD
+
+The host can send a program into a layers window. The DMD's own CPU then
+runs it in that window. `32ld` does this. dmd5620 includes `32ld`, ported
+from the AT&T 5620 development package
+([tenox7/dev5620](https://github.com/tenox7/dev5620)), and the demos and
+tools from the AT&T DMD Core Utilities diskettes.
+
+In a layers window:
+
+| Command | What it does |
+|---|---|
+| `demo` | Lists the demos |
+| `demo rose` | Runs a demo. Most end with `q`. |
+| `lens` | A magnifying glass: it shows the screen under the mouse |
+| `hp2621` | Makes the window an HP 2621 terminal |
+| `tek4014` | Makes the window a Tektronix 4014 terminal (graphics) |
+| `32ld FILE` | Loads any DMD program for layers |
+
+The demos: a, b, ball, bounce, calc, clock, clock1, clock2, dmdlock,
+doodle, juggle, m, maxwell, memory, nball, rae, rose, scope, weird, worm.
+
+Notes:
+
+- Wait until the demo draws before you type `q`. Keys typed during the
+  load go to the shell.
+- `lens` does not end with `q`. Close its window with **Delete** or start
+  another program in it.
+- `dmdlock` locks the terminal: type a password, then the same password
+  again to unlock.
+- `memory` makes its window very small.
+- `life` is not included: its host part is a 3B2 program.
+
 ### Connect to a 3B2
 
 The [OpenSIMH 3B2 emulator](https://loomcom.com/3b2/emulator/) gives its
@@ -185,9 +218,10 @@ You need a C99 compiler, GNU make, pkg-config and SDL2.
 `make install` puts the program, the man page, the icons and the desktop
 file under `/usr/local` (set `PREFIX` for another place).
 
-`make layers` builds `layers` from the git submodule `dmd-layers` (it gets
-the submodule if it is not there) into `layers/`. Do it before
-`make install` to install it too. Not for Windows.
+`make layers` builds `layers` from the git submodule `dmd-layers`, and
+`32ld` with the demos from the git submodule `dev5620` (it gets the
+submodules if they are not there), into `layers/`. Do it before
+`make install` to install them too. Not for Windows.
 
 Other make settings:
 
@@ -202,8 +236,8 @@ Other make settings:
 
 `test/smoke.py ./dmd5620` and `test/stress.py ./dmd5620` run the emulator
 headless and use it through MCP. `test/layers.py ./dmd5620` starts
-`layers`, opens a window with the mouse, and runs `jwin`, `ismpx` and
-`xts` in it. CI runs these on macOS, Linux, FreeBSD and Windows (no
+`layers`, opens a window with the mouse, runs `jwin`, `ismpx` and `xts`
+in it, and loads `demo rose` into the DMD. CI runs these on macOS, Linux, FreeBSD and Windows (no
 layers there).
 
 `test/difftest/run.sh` checks the C core against the Rust core. It gets

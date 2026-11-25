@@ -6,7 +6,8 @@
 #   make DEBUG=1         no optimization, debug info
 #   make STATIC=1        link SDL2 statically (release builds)
 #   make SDL_CONFIG=/path/to/sdl2-config   use that SDL2, not pkg-config
-#   make layers          build layers (AT&T windows for the DMD) into ./layers
+#   make layers          build layers (AT&T windows for the DMD), 32ld and the
+#                        demos into ./layers
 #   make install PREFIX=/usr/local
 #
 # FreeBSD: use gmake. Windows: MinGW-w64, cross or in MSYS2.
@@ -87,26 +88,38 @@ $(OBJDIR) $(OBJDIR)/core $(OBJDIR)/src:
 WINDRES ?= $(subst gcc,windres,$(CC))
 
 # layers: the host side of the DMD's window system, from the git submodule
-# dmd-layers. It goes to layers/ next to dmd5620, where dmd5620 finds it
-# and puts it on the shell's PATH. macOS, Linux and FreeBSD only.
+# dmd-layers; 32ld (loads programs into the DMD) and the demos, from the
+# git submodule dev5620. They go to layers/ next to dmd5620, where dmd5620
+# finds them and puts them on the shell's PATH. macOS, Linux and FreeBSD.
 LAYERS_SRC ?= dmd-layers
+DEV5620_SRC ?= dev5620
+LAYERS_OUT ?= $(CURDIR)/layers
 ifeq ($(UNAME),Linux)
 LAYERS_CFLAGS ?= -O -w -Dconst=
+LD32_CFLAGS ?= -O -w -std=gnu89
 else
 LAYERS_CFLAGS ?= -O -w -std=gnu89 -D_FORTIFY_SOURCE=0 -Wno-return-mismatch
+LD32_CFLAGS ?= $(LAYERS_CFLAGS)
 endif
+LD32_SRC = $(addprefix $(DEV5620_SRC)/32ld/,32ld.c proto.c pcheck.c ver.c coff.c)
 
-layers: $(LAYERS_SRC)/Makefile
-	rm -rf layers
+layers: $(LAYERS_SRC)/Makefile $(DEV5620_SRC)/32ld/32ld.c
+	rm -rf $(LAYERS_OUT)
 	$(MAKE) -j1 -C $(LAYERS_SRC) clean
-	$(MAKE) -j1 -C $(LAYERS_SRC) DMD=$(CURDIR)/layers EXTRACFLAGS="$(LAYERS_CFLAGS)" install
-	rm -rf layers/xt
-	@for f in bin/layers bin/jwin bin/xtagent lib/layersys/movelogin; do \
-		test -x layers/$$f || { echo "layers: $$f was not built"; exit 1; }; \
+	$(MAKE) -j1 -C $(LAYERS_SRC) DMD=$(LAYERS_OUT) EXTRACFLAGS="$(LAYERS_CFLAGS)" install
+	rm -rf $(LAYERS_OUT)/xt
+	$(CC) $(LD32_CFLAGS) -DUSE_HOSTAGENT -I$(DEV5620_SRC)/32ld -I$(LAYERS_SRC)/include \
+		-o $(LAYERS_OUT)/bin/32ld $(LD32_SRC) $(LAYERS_OUT)/lib/libwindows.a
+	cp -R $(DEV5620_SRC)/dmdcore/. $(LAYERS_OUT)/
+	@for f in bin/layers bin/jwin bin/xtagent bin/32ld bin/demo lib/layersys/movelogin; do \
+		test -x $(LAYERS_OUT)/$$f || { echo "layers: $$f was not built"; exit 1; }; \
 	done
 
 $(LAYERS_SRC)/Makefile:
 	git submodule update --init $(LAYERS_SRC)
+
+$(DEV5620_SRC)/32ld/32ld.c:
+	git submodule update --init $(DEV5620_SRC)
 
 clean:
 	rm -rf dmd5620 dmd5620.exe build/obj-* layers

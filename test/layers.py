@@ -6,8 +6,9 @@ usage: layers.py PATH/TO/dmd5620
 dmd5620 must find layers next to itself (make layers, or a release).
 The test starts layers from the shell, opens a window with the mouse
 menu, runs jwin, ismpx and xts in it (xts asks layers through its agent
-pipe), exits the shell in the window (layers then ends), and checks that
-the first shell works again.
+pipe), loads demo rose into the DMD with 32ld and ends it, exits the shell
+in the window (layers then ends), and checks that the first shell works
+again.
 """
 
 import base64
@@ -149,6 +150,27 @@ try:
     check("bytes" in text and "bits" in text, "jwin gets the window size from layers")
     check("yes" in text, "ismpx says yes")
     check("packets" in text, "xts gets the statistics from layers (agent pipe)")
+
+    # demo rose: 32ld loads the program into the DMD, where it draws in
+    # the window. 'q' ends it and the window's shell is back.
+    out4 = os.path.join(tmp, "demo.txt")
+    tool("type-text", text="demo > %s 2>&1\n" % out4)
+    check(wait_for(lambda: file_has(out4, "rose"), 15), "demo lists the demos")
+    before = lit_fraction()
+    tool("type-text", text="demo rose\n")
+    check(wait_for(lambda: lit_fraction() > before + 0.01, 30), "demo rose draws in the window")
+    print("     lit: %.3f before, %.3f after" % (before, lit_fraction()))
+    # Keys typed before the program takes the keyboard go to the host
+    # shell: wait. Ctrl-U clears the shell's line if a key went there.
+    time.sleep(3)
+    tool("type-text", text="q")
+    out5 = os.path.join(tmp, "after.txt")
+    for _ in range(4):
+        time.sleep(3)
+        tool("type-text", text="\x15echo after > %s\n" % out5)
+        if wait_for(lambda: file_has(out5, "after"), 5):
+            break
+    check(file_has(out5, "after"), "q ends the demo, the shell works again")
 
     # Exit the shell in the last window: layers ends.
     tool("type-text", text="exit\n")
