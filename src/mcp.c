@@ -238,6 +238,8 @@ static void call_vm(const jnode *id, const char *tool, const jnode *args) {
         if (n <= 0)
             break;
         sb_putn(&resp, buf, (size_t)n);
+        if (memchr(buf, '\n', (size_t)n))
+            break; /* the answer is one line; do not wait for the close */
     }
     sock_close(fd);
 

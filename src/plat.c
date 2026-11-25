@@ -113,6 +113,7 @@ const char *sock_error(void) {
 }
 
 void sock_close(sock_t s) {
+    shutdown(s, SD_BOTH);
     closesocket(s);
 }
 
@@ -169,6 +170,7 @@ const char *sock_error(void) {
 }
 
 void sock_close(sock_t s) {
+    shutdown(s, SHUT_RDWR);
     close(s);
 }
 

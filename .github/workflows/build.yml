@@ -111,7 +111,7 @@ jobs:
         run: |
           unzip -q dmd5620-*-windows-x64.zip
           exe=$(ls -d dmd5620-*-windows-x64)/dmd5620.exe
-          python test/smoke.py "$exe"
+          for i in 1 2 3; do python test/smoke.py "$exe"; done
           python test/smoke.py "$exe" "8;7;3"
 
   freebsd:
