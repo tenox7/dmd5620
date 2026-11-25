@@ -7,3 +7,4 @@ compile_commands.json
 build/
 # signing settings (DEV_ID, NOTARY_PROFILE) for tools/release-macos.sh
 .env
+/layers/

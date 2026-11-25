@@ -1,4 +1,4 @@
-.TH dmd5620 1 "24 Nov 2026" "0.2.2" "AT&T DMD 5620 Terminal Emulator"
+.TH dmd5620 1 "25 Nov 2026" "0.2.3" "AT&T DMD 5620 Terminal Emulator"
 .SH NAME
 dmd5620 \- AT&T DMD 5620 Terminal Emulator
 .SH SYNOPSIS
@@ -97,6 +97,18 @@ example, after \fBATTACH CONTTY 9100\fR in the simulator:
 .EX
 $ dmd5620 \-\-telnet localhost:9100
 .EE
+.SH LAYERS ON THE LOCAL HOST
+\fBlayers\fR, the host side of the DMD's window system, comes with dmd5620
+on macOS, Linux and FreeBSD (github.com/tenox7/dmd-layers). When dmd5620
+starts a shell and finds its \fIlayers\fR folder (next to the program, in
+\fIContents/Resources\fR of DMD5620.app, or \fIPREFIX/lib/dmd5620\fR), it adds
+\fIlayers/bin\fR to the shell's \fBPATH\fR and sets \fBDMDSYS\fR and
+\fBDMD\fR, if they are not set.
+.PP
+Type \fBlayers\fR in the shell. Hold the right mouse button and choose
+\fINew\fR, then sweep a rectangle with the right button to make a window.
+Choose \fIExit\fR, or type \fBexit\fR in the last window, to stop layers.
+Use firmware \fB8;7;5\fR and 19200 baud.
 .SH USING SVR3 LAYERS
 One of the primary features of dmd5620 is support for the System V Release 3
 \fIlayers\fR program. Real DMD5620 terminals were hard-wired directly
@@ -116,6 +128,9 @@ escaped.
 All terminal settings are forgotten on shutdown. To save terminal
 settings, the contents of NVRAM must be stored in a file using
 the \fB\-\-nvram\fR flag.
+.PP
+Without an NVRAM file, or with a new one, the terminal starts with the
+firmware's defaults, but with Port A at 19200 baud, not 1200.
 .PP
 \fINote that the NVRAM format is different between firmware versions!\fR
 Using the same NVRAM file on an \fB8;7;5\fR firmware terminal

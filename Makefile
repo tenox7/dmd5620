@@ -6,6 +6,7 @@
 #   make DEBUG=1         no optimization, debug info
 #   make STATIC=1        link SDL2 statically (release builds)
 #   make SDL_CONFIG=/path/to/sdl2-config   use that SDL2, not pkg-config
+#   make layers          build layers (AT&T windows for the DMD) into ./layers
 #   make install PREFIX=/usr/local
 #
 # FreeBSD: use gmake. Windows: MinGW-w64, cross or in MSYS2.
@@ -62,7 +63,7 @@ OBJDIR  ?= build/obj-$(TARGET)
 OBJ      = $(addprefix $(OBJDIR)/,$(CORE_SRC:.c=.o) $(FE_SRC:.c=.o)) \
            $(if $(WINDOWS),$(OBJDIR)/dmd5620.res.o)
 
-.PHONY: all clean install uninstall
+.PHONY: all clean install uninstall layers
 
 all: $(EXE)
 
@@ -85,8 +86,27 @@ $(OBJDIR) $(OBJDIR)/core $(OBJDIR)/src:
 
 WINDRES ?= $(subst gcc,windres,$(CC))
 
+# layers: the host side of the DMD's window system, from the git submodule
+# dmd-layers. It goes to layers/ next to dmd5620, where dmd5620 finds it
+# and puts it on the shell's PATH. macOS, Linux and FreeBSD only.
+LAYERS_SRC ?= dmd-layers
+ifeq ($(UNAME),Linux)
+LAYERS_CFLAGS ?= -O -w -Dconst=
+else
+LAYERS_CFLAGS ?= -O -w -std=gnu89 -D_FORTIFY_SOURCE=0 -Wno-return-mismatch
+endif
+
+layers: $(LAYERS_SRC)/Makefile
+	rm -rf layers
+	$(MAKE) -j1 -C $(LAYERS_SRC) clean
+	$(MAKE) -j1 -C $(LAYERS_SRC) DMD=$(CURDIR)/layers EXTRACFLAGS="$(LAYERS_CFLAGS)" install
+	rm -rf layers/xt
+
+$(LAYERS_SRC)/Makefile:
+	git submodule update --init $(LAYERS_SRC)
+
 clean:
-	rm -rf dmd5620 dmd5620.exe build/obj-*
+	rm -rf dmd5620 dmd5620.exe build/obj-* layers
 
 install: $(EXE)
 	install -d $(DESTDIR)$(PREFIX)/bin
@@ -99,6 +119,11 @@ install: $(EXE)
 	install -m 644 assets/dmd5620.svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps
 	install -d $(DESTDIR)$(PREFIX)/share/applications
 	install -m 644 assets/com.loomcom.dmd5620.desktop $(DESTDIR)$(PREFIX)/share/applications
+	if [ -x layers/bin/layers ]; then \
+		install -d $(DESTDIR)$(PREFIX)/lib/dmd5620 && \
+		rm -rf $(DESTDIR)$(PREFIX)/lib/dmd5620/layers && \
+		cp -R layers $(DESTDIR)$(PREFIX)/lib/dmd5620/; \
+	fi
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(EXE)
@@ -106,3 +131,4 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/48x48/apps/dmd5620.png
 	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/dmd5620.svg
 	rm -f $(DESTDIR)$(PREFIX)/share/applications/com.loomcom.dmd5620.desktop
+	rm -rf $(DESTDIR)$(PREFIX)/lib/dmd5620

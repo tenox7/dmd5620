@@ -29,15 +29,20 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Install SDL2
         run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
       - name: Build
-        run: make -j4 WERROR=1
+        run: |
+          make -j4 WERROR=1
+          make layers
       - name: Test
         run: |
           python3 test/smoke.py ./dmd5620
           python3 test/smoke.py ./dmd5620 "8;7;3"
           python3 test/stress.py ./dmd5620
+          python3 test/layers.py ./dmd5620
       - name: Package
         run: |
           v=$(awk '/VERSION_(MAJOR|MINOR|BUILD)/ {v = v (v ? "." : "") $3} END {print v}' src/version.h)
@@ -45,6 +50,7 @@ jobs:
           mkdir -p dist/$d
           strip dmd5620
           cp dmd5620 README.md MCP.md LICENSE.md dist/$d/
+          cp -R layers dist/$d/
           cp dmd5620.man dist/$d/dmd5620.1
           cp assets/dmd5620.png assets/dmd5620.svg assets/com.loomcom.dmd5620.desktop dist/$d/
           tar -C dist -czf dist/$d.tar.gz $d
@@ -57,6 +63,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Build (universal, SDL2 static; zip and DMG)
         run: sh tools/release-macos.sh
       - name: Test
@@ -64,8 +72,10 @@ jobs:
           python3 test/smoke.py ./dmd5620
           python3 test/smoke.py ./dmd5620 "8;7;3"
           python3 test/stress.py ./dmd5620
+          python3 test/layers.py ./dmd5620
           hdiutil attach -nobrowse -mountpoint /tmp/dmg build/dist/dmd5620-*-macos.dmg
           python3 test/smoke.py /tmp/dmg/DMD5620.app/Contents/MacOS/dmd5620
+          python3 test/layers.py /tmp/dmg/DMD5620.app/Contents/MacOS/dmd5620
           hdiutil detach /tmp/dmg
       - uses: actions/upload-artifact@v4
         with:
@@ -126,6 +136,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Build and test on FreeBSD 14.5
         uses: vmactions/freebsd-vm@v1
         with:
@@ -135,13 +147,16 @@ jobs:
           run: |
             set -e
             gmake -j2 WERROR=1
+            gmake layers
             python3 test/smoke.py ./dmd5620
             python3 test/stress.py ./dmd5620
+            python3 test/layers.py ./dmd5620
             v=$(awk '/VERSION_(MAJOR|MINOR|BUILD)/ {v = v (v ? "." : "") $3} END {print v}' src/version.h)
             d=dmd5620-$v-freebsd-amd64
             mkdir -p dist/$d
             strip dmd5620
             cp dmd5620 README.md MCP.md LICENSE.md dist/$d/
+            cp -R layers dist/$d/
             cp dmd5620.man dist/$d/dmd5620.1
             tar -C dist -czf dist/$d.tar.gz $d
       - uses: actions/upload-artifact@v4

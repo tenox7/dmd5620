@@ -32,6 +32,9 @@ Ready binaries are on the [Releases](../../releases) page:
 | `dmd5620-VERSION-freebsd-amd64.tar.gz` | FreeBSD 14 on amd64 (needs `pkg install sdl2`) |
 | `dmd5620-VERSION-windows-x64.zip` | Windows 10 and later, x64 (SDL2 is built in) |
 
+The macOS, Linux and FreeBSD packages include `layers`, the DMD's window
+system for your local shell. See [Windows with layers](#windows-with-layers).
+
 ## Use
 
 ```
@@ -53,7 +56,7 @@ Other options:
 | Option | What it does |
 |---|---|
 | `-f VER`, `--firmware` | Firmware `"8;7;3"` or `"8;7;5"` (default) |
-| `-n FILE`, `--nvram` | Keep the terminal's settings (its NVRAM) in FILE |
+| `-n FILE`, `--nvram` | Keep the terminal's settings (its NVRAM) in FILE. Without a file, the terminal starts with the firmware's defaults, but at 19200 baud |
 | `-i`, `--inherit` | Give the shell your whole environment, not a small clean one |
 | `--scale N` | Window size; 1 is 800x1024, pixel for pixel (default). Whole numbers stay sharp |
 | `--headless` | No window. MCP still sees the screen |
@@ -67,6 +70,56 @@ dmd5620 -n ~/.dmd5620_nvram
 dmd5620 -f "8;7;3" -d /dev/ttyS0 --baud 19200
 dmd5620 -t localhost:9100
 ```
+
+### Windows with layers
+
+`layers` is the host side of the DMD's window system. With it, the DMD
+shows many windows, each with its own shell. dmd5620 includes `layers` for
+macOS, Linux and FreeBSD. It is the pseudo-tty version by Keith Muller and
+Dave Dykstra (public domain), ported to current systems:
+[tenox7/dmd-layers](https://github.com/tenox7/dmd-layers). Firmware 8;7;5
+(the default) has the window system in ROM, so nothing is downloaded to
+the terminal. Firmware 8;7;3 is not tested.
+
+1. Start `dmd5620` with a local shell (the default).
+2. Type `layers`. After about 5 seconds the screen turns grey.
+3. Make a window: hold the right mouse button, move to **New**, release.
+   Then press the right button at one corner, move to the other corner,
+   and release. A shell starts in the window.
+4. Click a window with the left button to type in it.
+5. The right button menu also has **Reshape**, **Move**, **Top**,
+   **Bottom**, **Current**, **Delete** and **Exit**.
+6. To stop layers, choose **Exit** and click to confirm, or type `exit` in
+   the last window.
+
+In the windows you can use these programs: `jwin` (window size), `ismpx`
+(am I in layers?), `xts` and `xtt` (protocol statistics and trace),
+`relogin`, `pfkey`, `plabel`, `pmenu`, `penter`, `jterm`. Their man pages
+are in `layers/man`.
+
+When dmd5620 starts a shell and finds its `layers` folder, it adds
+`layers/bin` to the shell's `PATH`, and sets `DMDSYS` (the `layers`
+folder) and `DMD` (a private folder for the pipes of `layers`, in
+`$XDG_RUNTIME_DIR`, `$TMPDIR` or `/tmp`). It does not change a `DMD` or
+`DMDSYS` that you set.
+
+| Package | The `layers` folder |
+|---|---|
+| `DMD5620.app` | `DMD5620.app/Contents/Resources/layers` |
+| zip, tar.gz | `layers` next to `dmd5620` |
+| `make install` | `PREFIX/lib/dmd5620/layers` |
+| Source | `make layers` puts it in `layers` next to `dmd5620` |
+
+Notes:
+
+- Speed: layers is very slow at 1200 baud. New terminals start at 19200.
+  An NVRAM file from version 0.2.2 or older may have 1200: press F9
+  (Setup), then **Port Options**, **Port A Options**, and **Speed** until
+  it shows 19200.
+- **Delete** in the menu does nothing. Type `exit` in the window to close
+  it.
+- `who` does not show the windows: `layers` cannot write the login records
+  without root.
 
 ### Connect to a 3B2
 
@@ -92,7 +145,7 @@ and its size is 88x70.
 | Key | DMD key |
 |---|---|
 | F1 to F8 | F1 to F8 |
-| F9 | Setup |
+| F9 | Setup (the window title says so too) |
 | Shift+F9 | Reset |
 | Cmd+V (Mac), Shift+Insert, Ctrl+Shift+V | Paste the clipboard as typed text |
 
@@ -122,6 +175,10 @@ You need a C99 compiler, GNU make, pkg-config and SDL2.
 `make install` puts the program, the man page, the icons and the desktop
 file under `/usr/local` (set `PREFIX` for another place).
 
+`make layers` builds `layers` from the git submodule `dmd-layers` (it gets
+the submodule if it is not there) into `layers/`. Do it before
+`make install` to install it too. Not for Windows.
+
 Other make settings:
 
 - `make STATIC=1` links SDL2 statically.
@@ -132,6 +189,12 @@ Other make settings:
   (`SDL2-devel-2.x.x-mingw.tar.gz`).
 
 ## Testing
+
+`test/smoke.py ./dmd5620` and `test/stress.py ./dmd5620` run the emulator
+headless and use it through MCP. `test/layers.py ./dmd5620` starts
+`layers`, opens a window with the mouse, and runs `jwin`, `ismpx` and
+`xts` in it. CI runs these on macOS, Linux, FreeBSD and Windows (no
+layers there).
 
 `test/difftest/run.sh` checks the C core against the Rust core. It gets
 dmd_core 0.7.2, adds the test hooks in `test/difftest/rust_core.patch`,

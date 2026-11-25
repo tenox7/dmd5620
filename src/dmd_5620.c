@@ -658,6 +658,25 @@ void sdl_teardown() {
     }
 }
 
+/*
+ * NVRAM for a new terminal: what the firmware itself writes to an empty
+ * NVRAM, but with Port A at 19200 baud, not 1200. At 1200 baud layers
+ * and long output are very slow. The firmware keeps the sum of all bytes
+ * at 0x1ffe and starts from its own defaults when the sum is wrong.
+ */
+static void default_nvram(uint8_t *buf, uint8_t fw_version) {
+    unsigned sum = 0;
+
+    memset(buf, 0, NVRAM_SIZE);
+    buf[0x002] = 4; /* Port A speed: 0 = 1200, 1 = 2400 ... 4 = 19200 */
+    buf[0x686] = 1;
+    if (fw_version == 2)
+        buf[0x6e6] = buf[0x6ea] = buf[0x6ee] = 3;
+    for (int i = 0; i < 0x1ffe; i++)
+        sum += buf[i];
+    buf[0x1ffe] = sum & 0xff;
+}
+
 int main(int argc, char **argv) {
     int c, errflg = 0;
 
@@ -822,6 +841,7 @@ int main(int argc, char **argv) {
     dmd_init(fw_version);
 
     /* Load NVRAM, if any */
+    bool nvram_loaded = false;
     if (nvram != NULL) {
         fp = fopen(nvram, "rb");
 
@@ -839,10 +859,15 @@ int main(int argc, char **argv) {
                     LERR("Unable to read NVRAM file %s. Skipping.", nvram);
                 } else {
                     dmd_set_nvram(nvram_buf);
+                    nvram_loaded = true;
                 }
             }
             fclose(fp);
         }
+    }
+    if (!nvram_loaded) {
+        default_nvram(nvram_buf, fw_version);
+        dmd_set_nvram(nvram_buf);
     }
 
     if (mcp_on) {
@@ -853,7 +878,7 @@ int main(int argc, char **argv) {
 
     if (!headless) {
         char title[96];
-        snprintf(title, sizeof(title), "DMD 5620%s%s", vm_name ? " - " : "",
+        snprintf(title, sizeof(title), "DMD 5620%s%s   (F9 = Setup)", vm_name ? " - " : "",
                  vm_name ? vm_name : "");
         if (!sdl_init(title)) {
             sdl_teardown();

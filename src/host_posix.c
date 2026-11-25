@@ -33,6 +33,12 @@
 #include <pty.h>
 #endif
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__FreeBSD__)
+#include <sys/sysctl.h>
+#endif
+
 extern char **environ;
 
 const struct host_ops *host;
@@ -82,18 +88,113 @@ static int serial_read(uint8_t *buf, int max) {
 static const struct host_ops pty_ops = {fd_read, fd_write, fd_close};
 static const struct host_ops serial_ops = {serial_read, fd_write, fd_close};
 
+/* The folder this program is in, without the last '/'. */
+static bool exe_dir(char *buf, size_t size) {
+    char path[4096];
+
+#if defined(__APPLE__)
+    uint32_t n = sizeof(path);
+    if (_NSGetExecutablePath(path, &n) != 0)
+        return false;
+#elif defined(__FreeBSD__)
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    size_t n = sizeof(path);
+    if (sysctl(mib, 4, path, &n, NULL, 0) != 0)
+        return false;
+#else
+    ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (n <= 0)
+        return false;
+    path[n] = '\0';
+#endif
+    if (!realpath(path, buf) || strlen(buf) >= size)
+        return false;
+    char *slash = strrchr(buf, '/');
+    if (!slash)
+        return false;
+    *slash = '\0';
+    return true;
+}
+
+/* mkdir DIR 0700, or use it if it is already ours, private and not a link. */
+static bool private_dir(const char *dir) {
+    struct stat sb;
+
+    if (mkdir(dir, 0700) != 0 && errno != EEXIST)
+        return false;
+    return lstat(dir, &sb) == 0 && S_ISDIR(sb.st_mode) && sb.st_uid == getuid() &&
+           (sb.st_mode & 077) == 0;
+}
+
+/*
+ * layers, the AT&T window system host program, comes with the emulator
+ * in "layers" next to the program (DMD5620.app: Contents/Resources/layers;
+ * make install: PREFIX/lib/dmd5620/layers). If it is there, the shell
+ * gets its bin on PATH, DMDSYS (where layers finds its helper programs)
+ * and DMD, a private folder for the pipes that layers makes in DMD/xt.
+ * A DMD or DMDSYS that the user set stays as it is.
+ */
+static void layers_env(void) {
+    static const char *where[] = {"layers", "../Resources/layers", "../lib/dmd5620/layers", NULL};
+    char dir[4096], lyr[4096], buf[4096];
+
+    if (!exe_dir(dir, sizeof(dir)))
+        return;
+    for (int i = 0;; i++) {
+        if (!where[i])
+            return;
+        if (snprintf(lyr, sizeof(lyr), "%s/%s", dir, where[i]) >= (int)sizeof(lyr) ||
+            snprintf(buf, sizeof(buf), "%s/bin/layers", lyr) >= (int)sizeof(buf))
+            return;
+        if (access(buf, X_OK) == 0 && realpath(lyr, buf))
+            break;
+    }
+    memcpy(lyr, buf, sizeof(lyr));
+
+    const char *path = getenv("PATH");
+    if (snprintf(buf, sizeof(buf), "%s/bin", lyr) >= (int)sizeof(buf))
+        return;
+    if (!path || !*path) {
+        setenv("PATH", buf, 1);
+    } else if (!strstr(path, buf)) {
+        char *np = malloc(strlen(path) + strlen(buf) + 2);
+        if (np) {
+            sprintf(np, "%s:%s", path, buf);
+            setenv("PATH", np, 1);
+            free(np);
+        }
+    }
+    if (!getenv("DMDSYS"))
+        setenv("DMDSYS", lyr, 1);
+    if (!getenv("DMD")) {
+        const char *base = getenv("XDG_RUNTIME_DIR");
+        if (!base || !*base)
+            base = getenv("TMPDIR");
+        if (!base || !*base)
+            base = "/tmp";
+        if (snprintf(dir, sizeof(dir), "%s/dmd5620-%u", base, (unsigned)getuid()) >=
+                (int)sizeof(dir) ||
+            snprintf(buf, sizeof(buf), "%s/xt", dir) >= (int)sizeof(buf))
+            return;
+        if (private_dir(dir) && private_dir(buf))
+            setenv("DMD", dir, 1);
+    }
+}
+
 /*
  * Environment for the shell. Without --inherit the shell gets a small
  * clean environment. TERM is always "dmd", because that is what the
  * shell talks to.
  */
 static char **shell_env(bool inherit, const char *shell) {
-    static const char *keep[] = {"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", NULL};
+    static const char *keep[] = {"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG",
+                                 "DMD", "DMDSYS", NULL};
     size_t n = 0, cap = 16;
     char **env = calloc(cap, sizeof(char *));
 
     if (!env)
         return environ;
+    layers_env();
 
     if (inherit && environ) {
         for (char **e = environ; *e; e++) {

@@ -1,0 +1,3 @@
+[submodule "dmd-layers"]
+	path = dmd-layers
+	url = https://github.com/tenox7/dmd-layers.git

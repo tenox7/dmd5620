@@ -1,7 +1,8 @@
 #!/bin/sh
 # Build the macOS release: one universal (arm64 + x86_64) binary with SDL2
 # linked in statically, as a plain zip (command line) and as DMD5620.app in
-# a DMG. Work files go to build/, the results to build/dist/.
+# a DMG. Both have layers (git submodule dmd-layers), also universal.
+# Work files go to build/, the results to build/dist/.
 #
 #   tools/release-macos.sh
 #
@@ -59,8 +60,34 @@ if otool -L dmd5620 | grep "^	" | grep -v -E "/System/Library/|/usr/lib/"; then
     exit 1
 fi
 
+# layers: one build for each CPU, then lipo puts them together in layers/.
+[ -f dmd-layers/Makefile ] || git submodule update --init dmd-layers
+LCFLAGS="-O -w -std=gnu89 -D_FORTIFY_SOURCE=0 -Wno-return-mismatch"
+rm -rf layers
+for a in arm64 x86_64; do
+    rm -rf "$B/layers-$a"
+    make -j1 -C dmd-layers clean >/dev/null 2>&1
+    make -j1 -C dmd-layers DMD="$B/layers-$a" EXTRACFLAGS="$LCFLAGS -arch $a" install \
+        >"$B/layers-$a.log" 2>&1 || true
+    for f in bin/layers bin/jwin bin/xtagent lib/layersys/movelogin; do
+        [ -x "$B/layers-$a/$f" ] || { echo "layers ($a): no $f, see $B/layers-$a.log"; exit 1; }
+    done
+done
+make -j1 -C dmd-layers clean >/dev/null 2>&1
+cp -R "$B/layers-arm64" layers
+rm -rf layers/xt
+for f in $(find layers -type f); do
+    lipo -info "$f" >/dev/null 2>&1 || continue
+    lipo -create "$B/layers-arm64/${f#layers/}" "$B/layers-x86_64/${f#layers/}" -output "$f"
+done
+lipo -info layers/bin/layers
+
 SIGN="-" TS=""
 [ -n "$DEV_ID" ] && SIGN=$DEV_ID TS="--timestamp"
+for f in $(find layers -type f ! -name '*.a'); do
+    lipo -info "$f" >/dev/null 2>&1 || continue
+    codesign --force --options runtime $TS -s "$SIGN" "$f"
+done
 
 # The app. It gets its own copy of the binary: signing the bundle signs it again.
 APP=$B/dist/DMD5620.app
@@ -70,6 +97,7 @@ plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Inf
 plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"
 cp assets/dmd5620.icns "$APP/Contents/Resources/"
 cp dmd5620 "$APP/Contents/MacOS/"
+cp -R layers "$APP/Contents/Resources/"
 codesign --force --options runtime $TS -s "$SIGN" "$APP"
 codesign --verify --strict --deep "$APP"
 
@@ -80,6 +108,7 @@ codesign --verify --strict dmd5620
 D=$B/dist/dmd5620-$VERSION-macos
 rm -rf "$D" "$D.zip" && mkdir -p "$D"
 cp dmd5620 README.md MCP.md LICENSE.md "$D/"
+cp -R layers "$D/"
 cp dmd5620.man "$D/dmd5620.1"
 (cd "$B/dist" && ditto -c -k --keepParent "dmd5620-$VERSION-macos" "dmd5620-$VERSION-macos.zip")
 rm -rf "$D"
