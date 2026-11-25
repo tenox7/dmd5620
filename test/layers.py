@@ -121,7 +121,9 @@ try:
     print("     " + file_text(out1).replace("\n", "\n     ").rstrip())
 
     # layers boots the ROM window system: the screen turns grey (25% lit).
-    tool("type-text", text="layers\n")
+    # Its log (errors, info, protocol errors) is printed if a check fails.
+    lyrlog = os.path.join(tmp, "layers.log")
+    tool("type-text", text="layers -d 7 -o %s\n" % lyrlog)
     check(wait_for(lambda: lit_fraction() > 0.2, 30), "layers starts (grey screen)")
     time.sleep(6)  # layers asks the terminal's ID and waits 3 s; mouse input before that is lost
     grey = lit_fraction()
@@ -168,6 +170,11 @@ finally:
     out = emu.stdout.read().decode(errors="replace")
     if out.strip():
         print("emulator output:\n" + out)
+    if failures:
+        log = file_text(os.path.join(tmp, "layers.log")).splitlines()
+        print("layers log (%d lines), first 60 and last 40:" % len(log))
+        for line in log[:60] + ["..."] + log[-40:]:
+            print("     " + line[:150])
     shutil.rmtree(tmp, ignore_errors=True)
 
 print("%d failures" % len(failures))
