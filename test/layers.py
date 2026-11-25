@@ -83,6 +83,20 @@ def lit_fraction():
     return lit / float(w * h)
 
 
+def screen_still(secs, timeout):
+    """True once the screen has not changed for secs seconds."""
+    end = time.time() + timeout
+    last, since = tool("screenshot")[2], time.time()
+    while time.time() < end:
+        time.sleep(0.5)
+        cur = tool("screenshot")[2]
+        if cur != last:
+            last, since = cur, time.time()
+        elif time.time() - since >= secs:
+            return True
+    return False
+
+
 def wait_for(cond, timeout):
     end = time.time() + timeout
     while time.time() < end:
@@ -159,24 +173,27 @@ try:
     before = lit_fraction()
     tool("type-text", text="demo rose\n")
     check(wait_for(lambda: lit_fraction() > before + 0.01, 30), "demo rose draws in the window")
-    drawn = lit_fraction()
-    print("     lit: %.3f before, %.3f after" % (before, drawn))
-    # Keys typed before the program takes the keyboard go to the host
-    # shell: wait, and type q again until the drawing is gone. Ctrl-U
-    # clears the shell's line if a q went there.
+    print("     lit: %.3f before, %.3f after" % (before, lit_fraction()))
+    # rose draws a new figure every 2-3 s (and clears the window between
+    # them) until it reads q from the keyboard. It takes the keyboard 0-2 s
+    # after it starts, later on a slow machine: a key typed before that
+    # goes to the shell. So type q until the screen stays the same for 8 s.
+    # Ctrl-U then clears the shell's line if a q went there.
     time.sleep(3)
+    ended = False
     for _ in range(4):
         tool("type-text", text="q")
-        if wait_for(lambda: lit_fraction() < (before + drawn) / 2, 6):
+        if screen_still(8, 14):
+            ended = True
             break
-    print("     lit after q: %.3f" % lit_fraction())
+    check(ended, "q ends the demo (the screen stops changing)")
     out5 = os.path.join(tmp, "after.txt")
     for _ in range(4):
         time.sleep(3)
         tool("type-text", text="\x15echo after > %s\n" % out5)
         if wait_for(lambda: file_has(out5, "after"), 5):
             break
-    check(file_has(out5, "after"), "q ends the demo, the shell works again")
+    check(file_has(out5, "after"), "the shell works again after the demo")
 
     # Exit the shell in the last window: layers ends.
     tool("type-text", text="exit\n")

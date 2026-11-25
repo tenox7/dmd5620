@@ -148,8 +148,9 @@ doodle, juggle, m, maxwell, memory, nball, rae, rose, scope, weird, worm.
 
 Notes:
 
-- Wait until the demo draws before you type `q`. Keys typed during the
-  load go to the shell.
+- A demo takes the keyboard a second or two after it starts to draw.
+  Keys typed before that go to the shell. If `q` does not end the demo,
+  type it again.
 - `lens` does not end with `q`. Close its window with **Delete** or start
   another program in it.
 - `dmdlock` locks the terminal: type a password, then the same password
