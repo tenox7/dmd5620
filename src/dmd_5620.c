@@ -39,13 +39,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <SDL.h>
-#include <SDL2_framerate.h>
 #include <SDL_keycode.h>
 
+#include "ctl.h"
 #include "dmd_5620.h"
 #include "version.h"
 
@@ -67,20 +71,23 @@
 const char *FIRMWARE_873 = "8;7;3";
 const char *FIRMWARE_875 = "8;7;5";
 const size_t MAX_STEPS = 2000000;
+#define FRAME_MS 16
 
 SDL_Window *sdl_window = NULL;
-SDL_Surface *sdl_window_surface = NULL;
-SDL_Surface *sdl_pixel_surface = NULL;
+SDL_Renderer *sdl_renderer = NULL;
+SDL_Texture *sdl_texture = NULL;
 
 char VERSION_STRING[64];
 char *nvram = NULL;
 int pty_master, pty_slave;
 int sigint_count = 0;
 int tty_fd = -1;
-Uint64 previous_ticks = 0;
 pid_t shell_pid;
 struct pollfd fds[2];
 bool debug_log;
+bool headless = false;
+bool mcp_on = true;
+double window_scale = 0; /* 0 = pick one that fits the screen */
 
 volatile bool running = true;
 
@@ -96,13 +103,65 @@ void int_handler(int signal) {
 }
 
 /*
+ * Environment for the shell. Without --inherit the shell gets a small
+ * clean environment. TERM is always "dmd", because that is what the
+ * shell talks to.
+ */
+static char **shell_env(bool inherit, char *envp[], const char *shell) {
+    static const char *keep[] = {"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", NULL};
+    size_t n = 0, cap = 16;
+    char **env = calloc(cap, sizeof(char *));
+
+    if (!env)
+        return envp;
+
+    if (inherit && envp) {
+        for (char **e = envp; *e; e++) {
+            if (strncmp(*e, "TERM=", 5) == 0)
+                continue;
+            if (n + 3 >= cap) {
+                cap *= 2;
+                char **ne = realloc(env, cap * sizeof(char *));
+                if (!ne)
+                    return envp;
+                env = ne;
+            }
+            env[n++] = *e;
+        }
+    } else {
+        for (int i = 0; keep[i]; i++) {
+            const char *v = getenv(keep[i]);
+            if (v) {
+                size_t len = strlen(keep[i]) + strlen(v) + 2;
+                char *s = malloc(len);
+                if (s) {
+                    snprintf(s, len, "%s=%s", keep[i], v);
+                    env[n++] = s;
+                }
+            }
+        }
+        size_t len = strlen(shell) + 7;
+        char *s = malloc(len);
+        if (s) {
+            snprintf(s, len, "SHELL=%s", shell);
+            env[n++] = s;
+        }
+    }
+    env[n++] = "TERM=dmd";
+    env[n] = NULL;
+    return env;
+}
+
+/*
  * Initialize a shell PTY
  */
 void pty_init(const char *shell, char *envp[]) {
     char pty_name[64];
+    /* The DMD's own terminal is 88x70 characters (terminfo "dmd"). */
+    struct winsize ws = {70, 88, WIDTH, HEIGHT};
 
     /* Set up our PTY */
-    if (openpty(&pty_master, &pty_slave, pty_name, NULL, NULL) < 0) {
+    if (openpty(&pty_master, &pty_slave, pty_name, NULL, &ws) < 0) {
         perror("Could not open terminal pty: ");
         exit(-1);
     }
@@ -111,8 +170,6 @@ void pty_init(const char *shell, char *envp[]) {
 
     fds[0].fd = pty_master;
     fds[0].events = POLLIN;
-    fds[1].fd = pty_slave;
-    fds[1].events = POLLOUT;
 
     shell_pid = fork();
 
@@ -136,11 +193,7 @@ void pty_init(const char *shell, char *envp[]) {
         dup2(pty_slave, 2);
         close(pty_slave);
 
-        if (shell) {
-            retval = execle(shell, "-", NULL, envp);
-        } else {
-            retval = execle("/bin/sh", "-", NULL, envp);
-        }
+        retval = execle(shell, "-", NULL, envp);
 
         /* Child process is now replaced, nothing beyond this point
            will ever be reached unless there's an error. */
@@ -148,7 +201,6 @@ void pty_init(const char *shell, char *envp[]) {
             perror("Could not start shell process: ");
             exit(-1);
         }
-        close(pty_master);
     }
 
     close(pty_slave);
@@ -169,8 +221,6 @@ int tty_init(int fd) {
 
     fds[0].fd = fd;
     fds[0].events = POLLIN;
-    fds[1].fd = fd;
-    fds[1].events = POLLOUT;
 
     cfsetospeed(&tty, B9600);
     cfsetispeed(&tty, B9600);
@@ -197,6 +247,8 @@ int tty_init(int fd) {
     return 0;
 }
 
+enum { OPT_HEADLESS = 1000, OPT_NAME, OPT_NO_MCP, OPT_BRIDGE, OPT_SCALE };
+
 struct option long_options[] = {
     {"help", no_argument, 0, 'h'},
     {"version", no_argument, 0, 'v'},
@@ -205,11 +257,18 @@ struct option long_options[] = {
     {"shell", required_argument, 0, 's'},
     {"device", required_argument, 0, 'd'},
     {"nvram", required_argument, 0, 'n'},
+    {"headless", no_argument, 0, OPT_HEADLESS},
+    {"name", required_argument, 0, OPT_NAME},
+    {"no-mcp", no_argument, 0, OPT_NO_MCP},
+    {"mcp-bridge", no_argument, 0, OPT_BRIDGE},
+    {"scale", required_argument, 0, OPT_SCALE},
     {"debug", no_argument, 0, 'b'}, /* Hidden and undocumented */
     {0, 0, 0, 0}};
 
 void usage() {
-    printf("Usage: dmd5620 [-h] [-v] [-i] [-f VER] [-n FILE] -s SHELL|-d DEV\n");
+    printf("Usage: dmd5620 [-h] [-v] [-i] [-f VER] [-n FILE] [-s SHELL|-d DEV]\n");
+    printf("               [--scale N] [--headless] [--name NAME] [--no-mcp]\n");
+    printf("       dmd5620 --mcp-bridge\n");
     printf("AT&T DMD 5620 Terminal emulator.\n\n");
     printf("-h, --help              display help and exit\n");
     printf("-v, --version           display version and exit\n");
@@ -217,8 +276,16 @@ void usage() {
     printf("-f, --firmware VER      Firmware version (\"8;7;3\" or \"8;7;5\")\n");
     printf("-n, --nvram FILE        store nvram state in FILE\n");
     printf("-s, --shell SHELL       execute SHELL instead of default user "
-           "shell\n");
+           "shell ($SHELL)\n");
     printf("-d, --device DEV        serial port name\n");
+    printf("    --scale N           window size: 1 = 800x1024 (default: fit the "
+           "screen)\n");
+    printf("    --headless          no window (for agents; MCP still sees the "
+           "screen)\n");
+    printf("    --name NAME         VM name for MCP tools (default: dmd5620)\n");
+    printf("    --no-mcp            do not open the MCP control socket "
+           "(also: DMD_MCP=0)\n");
+    printf("    --mcp-bridge        run as the MCP server (stdio) for agents\n");
 }
 
 /*
@@ -229,13 +296,14 @@ void pty_io_poll() {
     char tx_buf[TX_BUF_LEN];
     int b_read;
 
-    if (poll(fds, 2, 0) > 0) {
-        if (fds[0].revents & POLLIN) {
+    if (poll(fds, 1, 0) > 0) {
+        if (fds[0].revents & (POLLIN | POLLHUP)) {
             b_read = read(pty_master, tx_buf, TX_BUF_LEN);
 
             if (b_read <= 0) {
-                perror("Nothing to read from child: ");
-                exit(-1);
+                /* The shell has exited. */
+                running = false;
+                return;
             }
 
             for (int i = 0; i < b_read; i++) {
@@ -246,7 +314,7 @@ void pty_io_poll() {
 
     while (dmd_rs232_tx(&txc) == 0) {
         if (write(pty_master, &txc, 1) < 0) {
-            LERR("Error %d from write: %s\n", errno, strerror(errno));
+            LERR("Error %d from write: %s", errno, strerror(errno));
         }
     }
 }
@@ -256,7 +324,7 @@ void tty_io_poll() {
     char tx_buf[TX_BUF_LEN];
     int b_read, i;
 
-    if (poll(fds, 2, 100) > 0) {
+    if (poll(fds, 1, 0) > 0) {
         if (fds[0].revents & POLLIN) {
 
             b_read = read(tty_fd, tx_buf, TX_BUF_LEN);
@@ -267,7 +335,6 @@ void tty_io_poll() {
         }
     }
 
-    i = 0;
     while (dmd_rs232_tx(&txc) == 0) {
         if (write(tty_fd, &txc, 1) < 0) {
             fprintf(stderr, "error %d during write: %s\n", errno, strerror(errno));
@@ -275,48 +342,83 @@ void tty_io_poll() {
     }
 }
 
+/* Integer scale: crisp pixels. Otherwise smooth them. */
+static void update_scale_mode() {
+    int ow, oh;
+    if (SDL_GetRendererOutputSize(sdl_renderer, &ow, &oh) != 0)
+        return;
+    double s = MIN((double)ow / WIDTH, (double)oh / HEIGHT);
+    double frac = s - (double)(long)s;
+    bool integer = s >= 1.0 && (frac < 0.01 || frac > 0.99);
+    SDL_SetTextureScaleMode(sdl_texture, integer ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+}
+
 /*
- * Initialize the SDL system and get the window, surface, and renderer.
+ * Initialize the SDL system and get the window, renderer and texture.
  */
-bool sdl_init() {
+bool sdl_init(const char *title) {
+#ifdef __linux__
     SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
 
-	SDL_setenv("SDL_VIDEO_X11_WMCLASS", "com.loomcom.dmd5620", 1);
-	SDL_setenv("SDL_VIDEO_WAYLAND_WMCLASS", "com.loomcom.dmd5620", 1);
+    SDL_setenv("SDL_VIDEO_X11_WMCLASS", "com.loomcom.dmd5620", 1);
+    SDL_setenv("SDL_VIDEO_WAYLAND_WMCLASS", "com.loomcom.dmd5620", 1);
+#endif
+    SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
 
-    /* Initialize audio (for keyboard beeps), video, and event handling */
-    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
         LERR("Error initializing SDL: %s", SDL_GetError());
         return false;
     }
 
-    sdl_window =
-        SDL_CreateWindow("DMD 5620", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                         WIDTH, HEIGHT, SDL_WINDOW_SHOWN);
+    /* Window size: the biggest whole scale that fits the screen. */
+    double scale = window_scale;
+    if (scale <= 0) {
+        SDL_Rect usable;
+        scale = 1;
+        if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.h > 0) {
+            int room = usable.h - 40; /* title bar */
+            for (int s = 3; s >= 1; s--) {
+                if (HEIGHT * s <= room) {
+                    scale = s;
+                    break;
+                }
+                scale = (double)room / HEIGHT;
+            }
+        }
+    }
+
+    sdl_window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                  (int)(WIDTH * scale), (int)(HEIGHT * scale),
+                                  SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
+                                      SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (!sdl_window) {
         LERR("Error creating window: %s", SDL_GetError());
         return false;
     }
 
-    sdl_window_surface = SDL_GetWindowSurface(sdl_window);
-
-    if (!sdl_window_surface) {
-        LERR("Error getting window surface: %s", SDL_GetError());
+    sdl_renderer = SDL_CreateRenderer(sdl_window, -1, SDL_RENDERER_ACCELERATED);
+    if (!sdl_renderer)
+        sdl_renderer = SDL_CreateRenderer(sdl_window, -1, SDL_RENDERER_SOFTWARE);
+    if (!sdl_renderer) {
+        LERR("Error creating renderer: %s", SDL_GetError());
         return false;
     }
 
-    sdl_pixel_surface =
-        SDL_CreateRGBSurfaceWithFormat(0, WIDTH, HEIGHT, 32, SDL_PIXELFORMAT_RGBA8888);
+    /* The DMD screen is 800x1024 whatever the window size. SDL scales
+     * the picture and the mouse coordinates for us. */
+    SDL_RenderSetLogicalSize(sdl_renderer, WIDTH, HEIGHT);
 
-    if (!sdl_pixel_surface) {
-        LERR("Error getting pixel surface: %s", SDL_GetError());
+    sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                    SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+    if (!sdl_texture) {
+        LERR("Error creating texture: %s", SDL_GetError());
         return false;
     }
+    update_scale_mode();
 
-    /* Record starting time */
-    previous_ticks = SDL_GetTicks64();
-    LDBG("[INIT] previous_ticks = %lu", previous_ticks);
+    /* The DMD draws its own mouse cursor. */
+    SDL_ShowCursor(SDL_DISABLE);
 
     return true;
 }
@@ -340,6 +442,19 @@ bool sdl_init() {
 void handle_keydown_event(SDL_KeyboardEvent *event) {
     uint8_t c = 0;
     SDL_Keycode code = event->keysym.sym;
+
+    /* Command key combinations belong to the Mac, not to the DMD.
+     * Cmd-V pastes the clipboard as typed text. */
+    if (event->keysym.mod & KMOD_GUI) {
+        if (code == SDLK_v && SDL_HasClipboardText()) {
+            char *text = SDL_GetClipboardText();
+            if (text) {
+                ctl_paste(text);
+                SDL_free(text);
+            }
+        }
+        return;
+    }
 
     switch (code) {
     case SDLK_F1:
@@ -391,6 +506,7 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
         c = 0xd1;
         break;
     case SDLK_RETURN:
+    case SDLK_KP_ENTER:
         c = 0xe7;
         break;
     case SDLK_TAB:
@@ -527,119 +643,126 @@ void handle_keydown_event(SDL_KeyboardEvent *event) {
     dmd_keyboard_rx(c);
 }
 
-void sdl_main_loop() {
+/* Copies video RAM into the window. */
+static void render() {
+    uint8_t *vram = dmd_video_ram();
+    uint8_t oport = 0;
+    void *pixels;
+    int pitch;
+
+    if (!vram) {
+        LERR("Unable to access video ram!");
+        return;
+    }
+
+    dmd_get_duart_output_port(&oport);
+
+    const struct color *fg = (oport & 0x2) ? &COLOR_DARK : &COLOR_LIGHT;
+    const struct color *bg = (oport & 0x2) ? &COLOR_LIGHT : &COLOR_DARK;
+    uint32_t fgc = 0xff000000u | ((uint32_t)fg->r << 16) | ((uint32_t)fg->g << 8) | fg->b;
+    uint32_t bgc = 0xff000000u | ((uint32_t)bg->r << 16) | ((uint32_t)bg->g << 8) | bg->b;
+
+    if (SDL_LockTexture(sdl_texture, NULL, &pixels, &pitch) != 0)
+        return;
+    for (int y = 0; y < HEIGHT; y++) {
+        uint32_t *row = (uint32_t *)((uint8_t *)pixels + (size_t)y * (size_t)pitch);
+        const uint8_t *src = vram + y * WIDTH_IN_BYTES;
+        for (int x = 0; x < WIDTH_IN_BYTES; x++) {
+            uint8_t b = src[x];
+            for (int i = 0; i < 8; i++)
+                row[x * 8 + i] = ((b >> (7 - i)) & 1) ? fgc : bgc;
+        }
+    }
+    SDL_UnlockTexture(sdl_texture);
+}
+
+static void present() {
+    SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(sdl_renderer);
+    SDL_RenderCopy(sdl_renderer, sdl_texture, NULL, NULL);
+    SDL_RenderPresent(sdl_renderer);
+}
+
+static void handle_events(bool *need_present) {
     SDL_Event ev;
-    FPSmanager fpsmanager;
-    int x, y;
-    uint8_t *vram;
-    Uint64 ticks;
-    size_t steps;
 
-    SDL_initFramerate(&fpsmanager);
-    SDL_setFramerate(&fpsmanager, 60);
+    /*
+     * Some notes on event handling:
+     *
+     * - The DMD mouse is relative and counts Y up (see ctl.c).
+     *
+     * - SDL mouse buttons are numbered 1, 2, 3, whereas the DMD
+     *   expects buttons to be numbered 0, 1, 2.
+     *
+     * - SDL_RenderSetLogicalSize() gives us mouse coordinates in DMD
+     *   pixels, whatever the window size or the screen's pixel density.
+     */
+    while (SDL_PollEvent(&ev) != 0) {
+        switch (ev.type) {
+        case SDL_QUIT:
+            running = false;
+            break;
+        case SDL_KEYDOWN:
+            handle_keydown_event(&ev.key);
+            break;
+        case SDL_MOUSEMOTION:
+            /* The DMD mouse is relative: pass on how far it moved. */
+            if (ev.motion.xrel || ev.motion.yrel)
+                ctl_human_mouse(ev.motion.xrel, ev.motion.yrel);
+            break;
+        case SDL_MOUSEBUTTONDOWN:
+            if (ev.button.button > 0 && ev.button.button <= 3) {
+                dmd_mouse_down((uint8_t)(ev.button.button - 1));
+            }
+            break;
+        case SDL_MOUSEBUTTONUP:
+            if (ev.button.button > 0 && ev.button.button <= 3) {
+                dmd_mouse_up((uint8_t)(ev.button.button - 1));
+            }
+            break;
+        case SDL_WINDOWEVENT:
+            if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                ev.window.event == SDL_WINDOWEVENT_RESIZED) {
+                update_scale_mode();
+                *need_present = true;
+            } else if (ev.window.event == SDL_WINDOWEVENT_EXPOSED) {
+                *need_present = true;
+            }
+            break;
+        default:
+            /* Do nothing */
+            break;
+        }
+    }
+}
 
-    /* Clear pixels */
-    SDL_FillRect(sdl_pixel_surface, NULL, 0);
+void sdl_main_loop() {
+    uint64_t previous_ms = ctl_now_ms();
+    uint64_t next_frame = previous_ms;
+    bool need_present = true;
 
     while (running) {
-        /*
-         * Some notes on event handling:
-         *
-         * - The DMD considers screen origin to be top-right, so X
-         *   coordinates are backward with respect to SDL.
-         *
-         * - SDL mouse buttons are numbered 1, 2, 3, whereas the DMD
-         *   expects buttons to be numbered 0, 1, 2.
-         *
-         * - TODO: Mouse movement may not be right in high-dpi screens, or
-         *   screens with fractional scaling. I need to test this.
-         */
-
-        while (SDL_PollEvent(&ev) != 0) {
-            switch (ev.type) {
-            case SDL_QUIT:
-                running = false;
-                break;
-            case SDL_KEYDOWN:
-                handle_keydown_event(&ev.key);
-                break;
-            case SDL_MOUSEMOTION:
-                if (ev.motion.x >= 0 && ev.motion.x <= WIDTH && ev.motion.y >= 0 &&
-                    ev.motion.y <= HEIGHT) {
-                    dmd_mouse_move((uint16_t)ev.motion.x,
-                                   (uint16_t)(HEIGHT - ev.motion.y));
-                }
-                break;
-            case SDL_MOUSEBUTTONDOWN:
-                if (ev.button.button > 0 && ev.button.button <= 3) {
-                    dmd_mouse_down((uint8_t)(ev.button.button - 1));
-                }
-                break;
-            case SDL_MOUSEBUTTONUP:
-                if (ev.button.button > 0 && ev.button.button <= 3) {
-                    dmd_mouse_up((uint8_t)(ev.button.button - 1));
-                }
-                break;
-            default:
-                /* Do nothing */
-                break;
-            }
-        }
+        if (!headless)
+            handle_events(&need_present);
 
         if (!running)
             break;
 
-        if (dmd_video_ram_dirty()) {
-            vram = dmd_video_ram();
+        uint64_t now = ctl_now_ms();
 
-            if (!vram) {
-                LERR("Unable to access video ram!");
-                return;
+        if (mcp_on)
+            ctl_service(now);
+
+        if (!headless) {
+            bool redraw = ctl_take_redraw();
+            if (dmd_video_ram_dirty() || redraw) {
+                render();
+                need_present = true;
             }
-
-            SDL_LockSurface(sdl_pixel_surface);
-            {
-                const struct color *fg_color;
-                const struct color *bg_color;
-
-                uint8_t *pixel_data = (uint8_t *)(sdl_pixel_surface->pixels);
-                uint8_t oport = 0;
-                int pixel_data_index = 0;
-
-                dmd_get_duart_output_port(&oport);
-
-                if (oport & 0x2) {
-                    fg_color = &COLOR_DARK;
-                    bg_color = &COLOR_LIGHT;
-                } else {
-                    fg_color = &COLOR_LIGHT;
-                    bg_color = &COLOR_DARK;
-                }
-
-                for (y = 0; y < HEIGHT; y++) {
-                    for (x = 0; x < WIDTH_IN_BYTES; x++) {
-                        uint8_t b = vram[y * WIDTH_IN_BYTES + x];
-                        for (int i = 0; i < 8; i++) {
-                            int bit = (b >> (7 - i)) & 1;
-                            if (bit) {
-                                pixel_data[pixel_data_index++] = fg_color->a;
-                                pixel_data[pixel_data_index++] = fg_color->b;
-                                pixel_data[pixel_data_index++] = fg_color->g;
-                                pixel_data[pixel_data_index++] = fg_color->r;
-                            } else {
-                                pixel_data[pixel_data_index++] = bg_color->a;
-                                pixel_data[pixel_data_index++] = bg_color->b;
-                                pixel_data[pixel_data_index++] = bg_color->g;
-                                pixel_data[pixel_data_index++] = bg_color->r;
-                            }
-                        }
-                    }
-                }
+            if (need_present) {
+                present();
+                need_present = false;
             }
-            SDL_UnlockSurface(sdl_pixel_surface);
-
-            SDL_BlitSurface(sdl_pixel_surface, NULL, sdl_window_surface, NULL);
-            SDL_UpdateWindowSurface(sdl_window);
         }
 
         /*
@@ -654,45 +777,38 @@ void sdl_main_loop() {
          * original terminal did. We also need a way to turn that off if a
          * user doesn't want it!
          */
-        /*
-        uint8_t kbc;
-        if (dmd_keyboard_tx(&kbc) == 0) {
-            if (kbc & 0x08) {
-                // Beep here.
-            }
-        }
-        */
-
-        size_t delta;
-
-        ticks = SDL_GetTicks64();
-
-        if (ticks < previous_ticks) {
-            /* Panic?? */
-            LERR("We went backward in time!");
-            return;
-        }
 
         /* We take 13,888 simulated steps per millisecond of wall clock
          * time, based on a 7.2 MHz WE 32100 CPU.
          */
-        delta = ticks - previous_ticks;
-        steps = MIN((size_t)(13888 * delta), MAX_STEPS);
-        previous_ticks = ticks;
+        size_t delta = (size_t)(now - previous_ms);
+        size_t steps = MIN((size_t)(13888 * delta), MAX_STEPS);
+        previous_ms = now;
 
         dmd_step_loop(steps);
 
-        /* Wait for the next frame */
-        Uint32 delay = SDL_framerateDelay(&fpsmanager);
+        /* Wait for the next frame (about 60 per second) */
+        next_frame += FRAME_MS;
+        now = ctl_now_ms();
+        if (next_frame > now) {
+            uint64_t wait = next_frame - now;
+            struct timespec ts = {0, (long)(wait * 1000000)};
+            nanosleep(&ts, NULL);
+        } else if (now - next_frame > 100) {
+            next_frame = now; /* we fell behind; do not try to catch up */
+        }
 
-        LDBG("[MAIN LOOP] delay=%u. Executed %lu steps in %lu ms. rate ~= %.2f MHz",
-             delay, steps, delta, ((float)steps / (float)delta) / 1000.0f);
+        LDBG("[MAIN LOOP] Executed %zu steps in %zu ms. rate ~= %.2f MHz", steps, delta,
+             delta ? ((float)steps / (float)delta) / 1000.0f : 0.0f);
     }
 }
 
 void sdl_teardown() {
     uint8_t buf[NVRAM_SIZE];
     FILE *fp;
+
+    if (mcp_on)
+        ctl_stop();
 
     if (nvram && dmd_get_nvram(buf) == 0) {
         fp = fopen(nvram, "w+");
@@ -702,13 +818,19 @@ void sdl_teardown() {
             if (fwrite(buf, NVRAM_SIZE, 1, fp) != 1) {
                 fprintf(stderr, "Could not write full NVRAM file %s\n", nvram);
             }
+            fclose(fp);
         }
     }
 
-    if (sdl_window)
-        SDL_DestroyWindow(sdl_window);
-
-    SDL_Quit();
+    if (!headless) {
+        if (sdl_texture)
+            SDL_DestroyTexture(sdl_texture);
+        if (sdl_renderer)
+            SDL_DestroyRenderer(sdl_renderer);
+        if (sdl_window)
+            SDL_DestroyWindow(sdl_window);
+        SDL_Quit();
+    }
 }
 
 int main(int argc, char **argv, char **envp) {
@@ -717,8 +839,11 @@ int main(int argc, char **argv, char **envp) {
     char *shell = NULL;
     char *device = NULL;
     char *firmware = NULL;
+    char *vm_name = NULL;
     int size;
     struct stat sb;
+    char connection[300];
+    uint8_t fw_version;
 
     uint8_t nvram_buf[NVRAM_SIZE];
     FILE *fp;
@@ -729,11 +854,8 @@ int main(int argc, char **argv, char **envp) {
     extern char *optarg;
     extern int optind, optopt;
 
-    snprintf(VERSION_STRING, 64, "%d.%d.%d", VERSION_MAJOR, VERSION_MINOR,
+    snprintf(VERSION_STRING, 64, "%d.%d.%d-mcp", VERSION_MAJOR, VERSION_MINOR,
              VERSION_BUILD);
-
-    signal(SIGINT, int_handler);
-    signal(SIGCHLD, int_handler);
 
     while ((c = getopt_long(argc, argv, "hivbd:n:t:p:s:f:", long_options,
                             &option_index)) != -1) {
@@ -764,8 +886,25 @@ int main(int argc, char **argv, char **envp) {
         case 'f':
             firmware = optarg;
             break;
+        case OPT_HEADLESS:
+            headless = true;
+            break;
+        case OPT_NAME:
+            vm_name = optarg;
+            break;
+        case OPT_NO_MCP:
+            mcp_on = false;
+            break;
+        case OPT_BRIDGE:
+            return mcp_bridge_main();
+        case OPT_SCALE:
+            window_scale = atof(optarg);
+            if (window_scale < 0.25 || window_scale > 8) {
+                fprintf(stderr, "--scale must be between 0.25 and 8\n");
+                return -1;
+            }
+            break;
         case '?':
-            fprintf(stderr, "Unrecognized option: -%c\n", optopt);
             errflg++;
             break;
         }
@@ -776,16 +915,42 @@ int main(int argc, char **argv, char **envp) {
         return -1;
     }
 
-    if (shell == NULL && device == NULL) {
-        fprintf(stderr, "Either --shell or --device is required.\n");
-        return -1;
-    }
+    if (getenv("DMD_HEADLESS") && strcmp(getenv("DMD_HEADLESS"), "0"))
+        headless = true;
+    if (getenv("DMD_MCP"))
+        mcp_on = strcmp(getenv("DMD_MCP"), "0") != 0;
+    if (!vm_name && getenv("DMD_NAME"))
+        vm_name = getenv("DMD_NAME");
 
     if (shell != NULL && device != NULL) {
         fprintf(stderr,
                 "Cannot specify both --shell or --device. Only one is allowed.\n");
         return -1;
     }
+
+    if (shell == NULL && device == NULL) {
+        shell = getenv("SHELL");
+        if (shell == NULL || shell[0] == 0)
+            shell = "/bin/sh";
+    }
+
+    /* Initialize the CPU */
+    if (firmware == NULL || strncmp(FIRMWARE_875, firmware, 5) == 0) {
+        firmware = (char *)FIRMWARE_875;
+        fw_version = 2;
+    } else if (strncmp(FIRMWARE_873, firmware, 5) == 0) {
+        firmware = (char *)FIRMWARE_873;
+        fw_version = 1;
+    } else {
+        fprintf(stderr, "--firmware must be one of either \"%s\" or \"%s\".\n",
+                FIRMWARE_873, FIRMWARE_875);
+        return -1;
+    }
+
+    signal(SIGINT, int_handler);
+    signal(SIGTERM, int_handler);
+    signal(SIGCHLD, int_handler);
+    signal(SIGPIPE, SIG_IGN);
 
     if (device == NULL) {
         if (stat(shell, &sb) != 0 || (sb.st_mode & S_IXUSR) == 0) {
@@ -794,7 +959,8 @@ int main(int argc, char **argv, char **envp) {
             return -1;
         }
 
-        pty_init(shell, inherit ? envp : NULL);
+        pty_init(shell, shell_env(inherit, envp, shell));
+        snprintf(connection, sizeof(connection), "shell %s", shell);
     } else {
         if (stat(device, &sb) != 0) {
             fprintf(stderr, "Cannot open device %s.\n", device);
@@ -807,18 +973,10 @@ int main(int argc, char **argv, char **envp) {
         }
 
         tty_init(tty_fd);
+        snprintf(connection, sizeof(connection), "device %s", device);
     }
 
-    /* Initialize the CPU */
-    if (firmware == NULL || strncmp(FIRMWARE_875, firmware, 5) == 0) {
-        dmd_init(2);
-    } else if (strncmp(FIRMWARE_873, firmware, 5) == 0) {
-        dmd_init(1);
-    } else {
-        fprintf(stderr, "--firmware must be one of either \"%s\" or \"%s\".\n",
-                FIRMWARE_873, FIRMWARE_875);
-        return -1;
-    }
+    dmd_init(fw_version);
 
     /* Load NVRAM, if any */
     if (nvram != NULL) {
@@ -840,16 +998,32 @@ int main(int argc, char **argv, char **envp) {
                     dmd_set_nvram(nvram_buf);
                 }
             }
+            fclose(fp);
         }
     }
 
-    if (!sdl_init()) {
-        return EXIT_FAILURE;
+    if (mcp_on) {
+        ctl_info info = {vm_name, firmware, fw_version, connection, headless};
+        if (ctl_start(&info) != 0)
+            mcp_on = false;
+    }
+
+    if (!headless) {
+        char title[96];
+        snprintf(title, sizeof(title), "DMD 5620%s%s", vm_name ? " - " : "",
+                 vm_name ? vm_name : "");
+        if (!sdl_init(title)) {
+            sdl_teardown();
+            return EXIT_FAILURE;
+        }
     }
 
     sdl_main_loop();
 
     sdl_teardown();
+
+    if (shell_pid > 0)
+        kill(shell_pid, SIGHUP);
 
     return EXIT_SUCCESS;
 }

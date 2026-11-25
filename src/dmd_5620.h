@@ -34,7 +34,7 @@
 #define WIDTH          800
 #define HEIGHT         1024
 #define WIDTH_IN_BYTES 100
-#define NVRAM_SIZE     2<<12
+#define NVRAM_SIZE     (2 << 12)
 #define TX_BUF_LEN     64
 
 struct color {
@@ -44,10 +44,10 @@ struct color {
     uint8_t a;
 };
 
-const struct color COLOR_LIGHT = { 0, 255, 0, 255 };
-const struct color COLOR_DARK = { 0, 0, 0, 255 };
+static const struct color COLOR_LIGHT = { 0, 255, 0, 255 };
+static const struct color COLOR_DARK = { 0, 0, 0, 255 };
 
-/* dmd_core exported functions */
+/* dmd_core library */
 extern uint8_t *dmd_video_ram();
 extern int dmd_video_ram_dirty();
 extern int dmd_init(uint8_t version);
@@ -66,8 +66,7 @@ extern int dmd_mouse_up(uint8_t button);
 extern int dmd_set_nvram(uint8_t *buf);
 extern int dmd_get_nvram(uint8_t *buf);
 
-/* function prototypes */
-bool sdl_init();
+bool sdl_init(const char *title);
 void sdl_teardown();
 void sdl_main_loop();
 void int_handler(int signal);

@@ -2,12 +2,18 @@ SRCDIR = src
 LIBDIR = dmd_core
 GIT = git
 CARGO = cargo
-CFLAGS = $(shell pkg-config --cflags sdl2 SDL2_gfx) -Wall -Werror -std=gnu99
-GTKLIBS = $(shell pkg-config --libs sdl2 SDL2_gfx)
+CFLAGS = $(shell pkg-config --cflags sdl2) -Wall -Werror -std=gnu99
+SDLLIBS = $(shell pkg-config --libs sdl2)
+UNAME := $(shell uname -s)
 EXE = dmd5620
 CSRC = $(wildcard src/*.c)
 OBJ = $(CSRC:.c=.o)
-LDFLAGS = $(GTKLIBS) -lm -lpthread -lc -ldl -lutil
+LDFLAGS = $(SDLLIBS) -lz -lm -lpthread -lc -lutil
+ifeq ($(UNAME),Darwin)
+LDFLAGS += -liconv
+else
+LDFLAGS += -ldl
+endif
 CORELIB = $(LIBDIR)/target/release/libdmd_core.a
 
 ifeq ($(PREFIX),)
@@ -34,8 +40,10 @@ $(CORELIB):
 	$(if $(wildcard ./dmd_core/Cargo.toml),,$(error The submodule dmd_core is not checked out.))
 	@cd $(LIBDIR) && $(CARGO) build --release
 
+$(OBJ): $(wildcard src/*.h)
+
 $(EXE): $(CORELIB) $(OBJ)
-	@$(CC) $(CFLAGS) -o $@ $^ $(CORELIB) $(LDFLAGS)
+	@$(CC) $(CFLAGS) -o $@ $(OBJ) $(CORELIB) $(LDFLAGS)
 
 install: $(EXE)
 	install -d $(DESTDIR)$(PREFIX)/bin

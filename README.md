@@ -12,11 +12,19 @@ Version: 0.1.0
 This is an actively developed project. Bug reports and feature enhancements are
 welcome.
 
+## macOS and MCP
+
+This copy builds on macOS too (`./build.sh`; Rust is installed into `./build`,
+nothing outside this folder). SDL2_gfx is no longer needed. It also has a
+built-in MCP server, so an AI agent can see the screen and use the keyboard
+and mouse: see [MCP.md](MCP.md).
+
 ## Dependencies
 
 The executable has the following dependencies:
 
 * SDL2 (libSDL2)
+* zlib
 
 For building, a C99 compiler and the Rust toolchain (version 1.50 or
 later) are also required.
