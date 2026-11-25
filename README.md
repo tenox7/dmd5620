@@ -116,6 +116,9 @@ Notes:
   An NVRAM file from version 0.2.2 or older may have 1200: press F9
   (Setup), then **Port Options**, **Port A Options**, and **Speed** until
   it shows 19200.
+- `layers: not found`: your shell profile (for example FreeBSD's default
+  `~/.profile`) sets a new `PATH`. Add this line after it:
+  `[ -n "$DMDSYS" ] && PATH="$PATH:$DMDSYS/bin"`
 - **Delete** in the menu does nothing. Type `exit` in the window to close
   it.
 - `who` does not show the windows: `layers` cannot write the login records

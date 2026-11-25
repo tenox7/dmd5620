@@ -36,6 +36,7 @@ def check(ok, what):
 env = dict(os.environ)
 for k in ("DMD", "DMDSYS"):
     env.pop(k, None)
+env["HOME"] = tmp  # no ~/.profile: some set a new PATH (FreeBSD's does)
 emu = subprocess.Popen([exe, "--headless", "--name", name, "-s", "/bin/sh"],
                        env=env, cwd=tmp,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -90,12 +91,16 @@ def wait_for(cond, timeout):
     return False
 
 
-def file_has(path, text):
+def file_text(path):
     try:
         with open(path) as f:
-            return text in f.read()
+            return f.read()
     except OSError:
-        return False
+        return ""
+
+
+def file_has(path, text):
+    return text in file_text(path)
 
 
 try:
@@ -106,13 +111,14 @@ try:
     check(wait_for(lambda: name in tool("vm-list")[1], 10), "emulator runs")
     time.sleep(5)  # firmware boot, shell start
 
-    # The shell finds layers on its PATH.
+    # The shell finds layers on its PATH. Type again until the shell is up.
     out1 = os.path.join(tmp, "path.txt")
-    tool("type-text", text="command -v layers > %s; echo \"$DMD\" >> %s\n" % (out1, out1))
-    check(wait_for(lambda: file_has(out1, "/bin/layers"), 15),
-          "layers is on the shell's PATH")
-    with open(out1) as f:
-        print("     " + f.read().replace("\n", "\n     ").rstrip())
+    for _ in range(6):
+        tool("type-text", text="command -v layers > %s; echo \"$DMD\" >> %s\n" % (out1, out1))
+        if wait_for(lambda: file_text(out1).count("\n") >= 2, 5):
+            break
+    check("/bin/layers" in file_text(out1), "layers is on the shell's PATH")
+    print("     " + file_text(out1).replace("\n", "\n     ").rstrip())
 
     # layers boots the ROM window system: the screen turns grey (25% lit).
     tool("type-text", text="layers\n")
@@ -136,7 +142,7 @@ try:
     out2 = os.path.join(tmp, "agent.txt")
     tool("type-text", text="(jwin; ismpx; xts; echo end) > %s 2>&1\n" % out2)
     check(wait_for(lambda: file_has(out2, "end"), 20), "commands run in the window")
-    text = open(out2).read() if os.path.exists(out2) else ""
+    text = file_text(out2)
     print("     " + text.replace("\n", "\n     ").rstrip())
     check("bytes" in text and "bits" in text, "jwin gets the window size from layers")
     check("yes" in text, "ismpx says yes")
