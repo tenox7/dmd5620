@@ -1,4 +1,4 @@
-.TH dmd5620 1 "24 Nov 2026" "0.2.1" "AT&T DMD 5620 Terminal Emulator"
+.TH dmd5620 1 "24 Nov 2026" "0.2.2" "AT&T DMD 5620 Terminal Emulator"
 .SH NAME
 dmd5620 \- AT&T DMD 5620 Terminal Emulator
 .SH SYNOPSIS

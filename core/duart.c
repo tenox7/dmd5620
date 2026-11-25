@@ -220,9 +220,13 @@ static bool port_rx_read_char(struct port *p, uint8_t *out)
     if (!fifo_pop(&p->rx_fifo, &val))
         return false;
     p->stat &= (uint8_t)~STS_FFL;
-    /* As in the Rust core, the shift register is not emptied here. */
+    /* A character waiting in the shift register moves into the FIFO. The
+     * Rust core does not empty the shift register, so the same character
+     * came again on every read, without end. */
     if (p->rx_shift_full) {
         fifo_push(&p->rx_fifo, p->rx_shift_reg);
+        if (!core_rust_compat)
+            p->rx_shift_full = false;
         p->stat |= STS_RXR;
         if (p->rx_fifo.len == FIFO_LEN)
             p->stat |= STS_FFL;
@@ -257,6 +261,11 @@ static void port_rx_service(struct port *p, uint64_t now)
     if (!(port_rx_enabled(p) && p->rx_q.len != 0 && now >= p->next_rx_service))
         return;
     if (!port_loopback(p)) {
+        /* FIFO and shift register full: a real 2681 would overrun and lose
+         * a character. Keep it in the queue instead, so pasted text and
+         * fast typing are not lost while the firmware is busy. */
+        if (!core_rust_compat && p->rx_fifo.len == FIFO_LEN && p->rx_shift_full)
+            return;
         if (byteq_pop(&p->rx_q, &c))
             port_rx_char(p, c);
     }
@@ -573,7 +582,8 @@ int duart_read_byte(addr_t address, uint8_t *val)
         *val = d.ports[1].stat;
         return E_OK;
     case RHRB:
-        d.isr &= (uint8_t)~ISTS_RAI; /* sic: the Rust core clears RAI here */
+        /* The Rust core clears RAI (port A) here, not RBI. */
+        d.isr &= (uint8_t)~(core_rust_compat ? ISTS_RAI : ISTS_RBI);
         d.ivec &= (uint8_t)~KEYBOARD_INT;
         *val = port_rx_read_char(&d.ports[1], &c) ? c : 0;
         return E_OK;
