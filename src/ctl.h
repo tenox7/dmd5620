@@ -24,7 +24,8 @@ int ctl_start(const ctl_info *info);
 void ctl_service(uint64_t now_ms);
 void ctl_stop(void);
 bool ctl_take_redraw(void);
-void ctl_human_mouse(int dx, int dy); /* host mouse moved over the window */
+void ctl_human_mouse(int x, int y);       /* host pointer at x,y (DMD pixels) */
+void ctl_mouse_firmware(uint8_t fw_version); /* 1 = 8;7;3, 2 = 8;7;5 */
 
 /* Queue text typed by the user (e.g. Cmd-V paste). Main thread only. */
 void ctl_paste(const char *text);

@@ -143,6 +143,13 @@ A real 3B2 or other Unix host can use a serial port (`-d`), or telnet
 (`-t`). The emulator tells a telnet server that its terminal type is `DMD`
 and its size is 88x70.
 
+### Mouse
+
+The DMD cursor follows the host pointer pixel for pixel. The DMD mouse is
+relative, so the emulator sends the difference between the pointer and
+the cursor, and corrects it with the firmware's own cursor position when
+the mouse rests.
+
 ### Keys
 
 | Key | DMD key |

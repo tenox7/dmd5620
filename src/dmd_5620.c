@@ -520,7 +520,8 @@ static void handle_events(bool *need_present) {
     /*
      * Some notes on event handling:
      *
-     * - The DMD mouse is relative and counts Y up (see ctl.c).
+     * - The DMD mouse is relative and counts Y up. ctl.c makes it
+     *   absolute: the DMD cursor goes where the host pointer is.
      *
      * - SDL mouse buttons are numbered 1, 2, 3, whereas the DMD
      *   expects buttons to be numbered 0, 1, 2.
@@ -537,9 +538,7 @@ static void handle_events(bool *need_present) {
             handle_keydown_event(&ev.key);
             break;
         case SDL_MOUSEMOTION:
-            /* The DMD mouse is relative: pass on how far it moved. */
-            if (ev.motion.xrel || ev.motion.yrel)
-                ctl_human_mouse(ev.motion.xrel, ev.motion.yrel);
+            ctl_human_mouse(ev.motion.x, ev.motion.y);
             break;
         case SDL_MOUSEBUTTONDOWN:
             if (ev.button.button > 0 && ev.button.button <= 3) {
@@ -556,6 +555,16 @@ static void handle_events(bool *need_present) {
                 ev.window.event == SDL_WINDOWEVENT_RESIZED) {
                 update_scale_mode();
                 *need_present = true;
+            } else if (ev.window.event == SDL_WINDOWEVENT_LEAVE) {
+                /* The pointer left: the last motion event can be a few
+                 * pixels inside. Put the cursor where the pointer left,
+                 * at the edge (ctl_human_mouse stops it there). */
+                int gx, gy, wx, wy;
+                float lx, ly;
+                SDL_GetGlobalMouseState(&gx, &gy);
+                SDL_GetWindowPosition(sdl_window, &wx, &wy);
+                SDL_RenderWindowToLogical(sdl_renderer, gx - wx, gy - wy, &lx, &ly);
+                ctl_human_mouse((int)lx, (int)ly);
             } else if (ev.window.event == SDL_WINDOWEVENT_EXPOSED) {
                 *need_present = true;
             }
@@ -839,6 +848,7 @@ int main(int argc, char **argv) {
      * rate the main loop runs the CPU at (13,888 per ms). */
     dmd_set_ns_per_step(72);
     dmd_init(fw_version);
+    ctl_mouse_firmware(fw_version);
 
     /* Load NVRAM, if any */
     bool nvram_loaded = false;

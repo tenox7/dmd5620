@@ -45,7 +45,7 @@ default 300) to return a screenshot after the input.
 | Tool | What it does |
 |---|---|
 | `vm-list` | The running emulators: name, PID, socket |
-| `vm-info` | Firmware, connection, uptime, mouse, CPU PC |
+| `vm-info` | Firmware, connection, uptime, mouse, the firmware's own cursor position, CPU PC |
 | `screenshot` | PNG of the 800x1024 screen. `region` {x,y,w,h} crops, `zoom` 1-8 enlarges |
 | `key` | One key: a character, Return, Tab, BackSpace, Escape, Delete, Up, Down, Left, Right, F1-F8, Setup, `ctrl+X`, `shift+X`; or `code` 0-255 |
 | `type-text` | ASCII text; `\n` is Return, `\t` is Tab |
@@ -62,7 +62,8 @@ Coordinates are screen pixels, origin top-left, in all tools.
   change of two counters and stops it at the screen edges. So each
   `mouse-move` first pushes the cursor into the top-left corner, then
   moves it by x,y. While a button is down there is no homing, so a menu
-  stays open.
+  stays open. When the mouse rests, the emulator reads the firmware's
+  cursor from RAM and corrects its own idea of where the cursor is.
 - **Keys go through the keyboard port** at its baud rate, like a real
   keyboard. `type-text` waits `delay-ms` (default 10) between characters.
 - **Paste:** Cmd-V on a Mac, Shift-Insert or Ctrl-Shift-V elsewhere,

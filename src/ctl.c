@@ -62,6 +62,7 @@ typedef struct {
     uint8_t oport;
     uint32_t cpu_pc;
     int mx, my, buttons;
+    int fwx, fwy; /* the firmware's cursor, -1 if unknown */
 } req_t;
 
 static SDL_mutex *mu;
@@ -198,13 +199,92 @@ static void set_counters(int dx, int dy_down) {
     dmd_mouse_move((uint16_t)ctr_x, (uint16_t)ctr_y);
 }
 
-/* The person moved the host mouse over the window by dx,dy pixels. */
-void ctl_human_mouse(int dx, int dy) {
+/*
+ * The host mouse is absolute: the DMD cursor goes where the person's
+ * pointer is, pixel for pixel. We give the counters the difference between
+ * the pointer and the cursor (mouse_x, mouse_y). When the mouse rests, we
+ * read the firmware's own cursor from RAM and take it as the truth, so we
+ * correct drift and a cursor that the firmware moved itself. A move to an
+ * edge pushes past it: the firmware stops the cursor at the edge, so that
+ * axis is exact again even without the RAM (a downloaded terminal program
+ * can keep its cursor somewhere else).
+ */
+#define EDGE_PUSH 64
+#define REST_MS   50 /* 3 vertical blanks: the firmware took the counters */
+
+static uint8_t fw_ver;
+static bool human_owns;      /* the last move came from the host mouse */
+static int human_x, human_y; /* the host pointer, in DMD pixels */
+static uint64_t last_send_ms;
+static bool moved_since_check;
+static int fw_prev_x = -1, fw_prev_y = -1;
+static bool fw_live; /* the RAM cursor follows our moves */
+
+void ctl_mouse_firmware(uint8_t fw_version) {
+    fw_ver = fw_version;
+}
+
+/* The firmware's cursor (found by search: a Point the vertical blank
+ * interrupt updates from the counters). */
+static bool fw_cursor(int *x, int *y) {
+    uint32_t a = fw_ver == 2 ? 0x71a7a8 : fw_ver == 1 ? 0x71951c : 0;
+    uint8_t b[4];
+
+    if (!a)
+        return false;
+    for (int i = 0; i < 4; i++)
+        if (dmd_read_byte(a + (uint32_t)i, &b[i]) != DMD_SUCCESS)
+            return false;
+    *x = b[0] << 8 | b[1];
+    *y = b[2] << 8 | b[3];
+    return *x < WIDTH && *y < HEIGHT;
+}
+
+static void move_to(int x, int y, uint64_t now) {
+    int dx = x - mouse_x, dy = y - mouse_y;
+
+    dx += x == 0 ? -EDGE_PUSH : x == WIDTH - 1 ? EDGE_PUSH : 0;
+    dy += y == 0 ? -EDGE_PUSH : y == HEIGHT - 1 ? EDGE_PUSH : 0;
+    if (!dx && !dy)
+        return;
     set_counters(dx, dy);
-    mouse_x += dx;
-    mouse_y += dy;
-    mouse_x = mouse_x < 0 ? 0 : mouse_x >= WIDTH ? WIDTH - 1 : mouse_x;
-    mouse_y = mouse_y < 0 ? 0 : mouse_y >= HEIGHT ? HEIGHT - 1 : mouse_y;
+    last_send_ms = now;
+    if (x != mouse_x || y != mouse_y)
+        moved_since_check = true;
+    mouse_x = x;
+    mouse_y = y;
+}
+
+/* The host pointer is at x,y over the window (DMD pixels). */
+void ctl_human_mouse(int x, int y) {
+    human_x = x < 0 ? 0 : x >= WIDTH ? WIDTH - 1 : x;
+    human_y = y < 0 ? 0 : y >= HEIGHT ? HEIGHT - 1 : y;
+    human_owns = true;
+    move_to(human_x, human_y, plat_ms());
+}
+
+/* At rest: compare with the firmware's cursor. */
+static void service_mouse(uint64_t now) {
+    int fx, fy;
+
+    if (now - last_send_ms < REST_MS || !fw_cursor(&fx, &fy))
+        return;
+    if (fx != mouse_x || fy != mouse_y) {
+        if (moved_since_check && fx == fw_prev_x && fy == fw_prev_y) {
+            fw_live = false; /* it did not follow our moves */
+        } else if (fw_live || fw_prev_x < 0 || moved_since_check) {
+            fw_live = true;
+            mouse_x = fx;
+            mouse_y = fy;
+            if (human_owns)
+                move_to(human_x, human_y, now);
+        }
+    } else {
+        fw_live = true;
+    }
+    fw_prev_x = fx;
+    fw_prev_y = fy;
+    moved_since_check = false;
 }
 
 void ctl_paste(const char *text) {
@@ -248,11 +328,15 @@ bool ctl_take_redraw(void) {
 
 void ctl_service(uint64_t now) {
     service_paste(now);
-    if (!mu)
-        return; /* no MCP: only the paste */
+    if (!mu) {
+        service_mouse(now);
+        return; /* no MCP: only the paste and the mouse */
+    }
 
     SDL_LockMutex(mu);
     req_t *r = pending;
+    if (!r || r->done)
+        service_mouse(now); /* not in the middle of an agent's moves */
     if (r && !r->done && now >= r->resume_at) {
         while (r->pc < r->n) {
             act_t *a = &r->acts[r->pc++];
@@ -263,16 +347,24 @@ void ctl_service(uint64_t now) {
             case A_HOME:
                 /* Not while a button is down: that would drag through
                  * a menu. Then we trust the last known position. */
+                human_owns = false;
                 if (mouse_buttons == 0 || !mouse_known) {
                     set_counters(-HOME_DELTA, -HOME_DELTA);
+                    if (mouse_x || mouse_y)
+                        moved_since_check = true;
                     mouse_x = mouse_y = 0;
                     mouse_known = true;
+                    last_send_ms = now;
                 }
                 break;
             case A_MOVE:
+                human_owns = false;
                 set_counters(a->a - mouse_x, a->b - mouse_y);
+                if (a->a != mouse_x || a->b != mouse_y)
+                    moved_since_check = true;
                 mouse_x = a->a;
                 mouse_y = a->b;
+                last_send_ms = now;
                 break;
             case A_DOWN:
                 dmd_mouse_down((uint8_t)a->a);
@@ -300,6 +392,8 @@ void ctl_service(uint64_t now) {
             }
             case A_INFO:
                 dmd_get_pc(&r->cpu_pc);
+                if (!fw_cursor(&r->fwx, &r->fwy))
+                    r->fwx = r->fwy = -1;
                 break;
             case A_RESET:
                 dmd_init(info.fw_version);
@@ -638,11 +732,12 @@ static bool do_tool(const char *tool, const jnode *args, sbuf *text, char **png)
                       "name: %s\npid: %d\nfirmware: %s\nconnection: %s\n"
                       "window: %s\nuptime: %llu s\nscreen: 800x1024, 1 bit, "
                       "origin top-left\nmouse: %d,%d, buttons down: %s\n"
-                      "cpu pc: 0x%08x\nsocket: %s",
+                      "firmware cursor: %d,%d%s\ncpu pc: 0x%08x\nsocket: %s",
                       vm_name, plat_pid(), info.firmware, info.connection,
                       info.headless ? "no (headless)" : "yes",
                       (unsigned long long)((ctl_now_ms() - start_ms) / 1000), r->mx, r->my,
-                      btn_list(r->buttons, bl, sizeof(bl)), r->cpu_pc, sock_path);
+                      btn_list(r->buttons, bl, sizeof(bl)), r->fwx, r->fwy,
+                      fw_live ? "" : " (not in use)", r->cpu_pc, sock_path);
         } else if (strcmp(tool, "vm-power")) {
             sb_printf(text, "mouse %d,%d, buttons down: %s.", r->mx, r->my,
                       btn_list(r->buttons, bl, sizeof(bl)));
