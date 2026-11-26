@@ -19,6 +19,24 @@ test runs both cores side by side and compares them after every
 instruction (see [Testing](#testing)). The C core is faster, and it has
 one fix, so firmware 8;7;3 works too.
 
+## Screenshots
+
+The DMD 5620 with `layers` on an emulated AT&T 3B2/400 with UNIX System
+V Release 3.2 ([Open SIMH](https://github.com/open-simh/simh)). A ready to
+run kit with the 3B2 and this emulator:
+[att3b2-400-svr32-simh.tar.lz](https://files.42718.net/mirror/tenox/os/att/3b2/att3b2-400-svr32-simh.tar.lz).
+
+<table>
+<tr>
+<td><a href="screenshots/layers-demos.png"><img src="screenshots/layers-demos.png" width="390" alt="layers with uname and prtconf in one window, the rose and clock demos in two more"></a><br>layers: <code>uname</code> and <code>prtconf</code>, the rose and clock demos</td>
+<td><a href="screenshots/jim.png"><img src="screenshots/jim.png" width="390" alt="The jim editor with hello.c, and a shell window where gcc and cc build it"></a><br>jim, the DMD text editor, with gcc and AT&amp;T cc</td>
+</tr>
+<tr>
+<td><a href="screenshots/games.png"><img src="screenshots/games.png" width="390" alt="Bubble Breaker, 2048, Sokoban and Falling Blocks in four layers windows"></a><br>New games: Bubble Breaker, 2048, Sokoban and Falling Blocks (<a href="https://files.42718.net/mirror/tenox/os/att/3b2/games/">get them</a>)</td>
+<td><a href="screenshots/micropolis.png"><img src="screenshots/micropolis.png" width="390" alt="Micropolis: the city editor, a Heavy Traffic notice and the small city map"></a><br>Micropolis, the open source SimCity (<a href="https://github.com/tenox7/dmdcity">tenox7/dmdcity</a>)</td>
+</tr>
+</table>
+
 ## Download
 
 Ready binaries are on the [Releases](../../releases) page:
