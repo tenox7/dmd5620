@@ -38,9 +38,9 @@ if not specified is \fB"8;7;5"\fR.
 Store NVRAM state in file \fIFILE\fR. No default.
 .TP
 .BR \-\-scale " " \fIN\fR
-Window size: 1 is 800x1024, one DMD pixel per screen point. The default
-is 1, or smaller when the screen is too small for it. Whole numbers keep
-the pixels sharp.
+Window size: 1, 2, 3 or 4. 1 is 800x1024, one DMD pixel per screen
+point (the default); 2 is 1600x2048. The window has a fixed size: it
+cannot be resized.
 .TP
 .BR \-\-headless
 No window. The MCP tools still see the screen.

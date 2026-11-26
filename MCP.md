@@ -34,7 +34,7 @@ Windows 10 or later.
 | `--name NAME`, `DMD_NAME=` | The VM name in the tools (default `dmd5620`) |
 | `--headless`, `DMD_HEADLESS=1` | No window |
 | `--no-mcp`, `DMD_MCP=0` | No MCP socket |
-| `--scale N` | Window size; 1 = 800x1024, pixel for pixel (default) |
+| `--scale N` | Window size 1, 2, 3 or 4; 1 = 800x1024, pixel for pixel (default) |
 
 ## Tools
 

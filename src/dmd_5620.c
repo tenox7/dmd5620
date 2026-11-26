@@ -72,7 +72,7 @@ int sigint_count = 0;
 bool debug_log;
 bool headless = false;
 bool mcp_on = true;
-double window_scale = 0; /* 0 = pick one that fits the screen */
+int window_scale = 1; /* fixed window: N DMD pixels per screen point */
 
 volatile bool running = true;
 
@@ -118,8 +118,8 @@ void usage() {
     printf("-v, --version           display version and exit\n");
     printf("-f, --firmware VER      firmware version (\"8;7;3\" or \"8;7;5\")\n");
     printf("-n, --nvram FILE        store nvram state in FILE\n");
-    printf("    --scale N           window size: 1 = 800x1024, pixel for pixel "
-           "(default)\n");
+    printf("    --scale N           window size 1, 2, 3 or 4: 1 = 800x1024, "
+           "pixel for pixel (default)\n");
     printf("    --headless          no window (for agents; MCP still sees the "
            "screen)\n");
     printf("    --name NAME         VM name for MCP tools (default: dmd5620)\n");
@@ -198,23 +198,11 @@ bool sdl_init(const char *title) {
         return false;
     }
 
-    /* Window size: 1:1 (one DMD pixel per screen point), smaller only
-     * when the screen is too small for that. */
-    double scale = window_scale;
-    if (scale <= 0) {
-        SDL_Rect usable;
-        scale = 1;
-        if (SDL_GetDisplayUsableBounds(0, &usable) == 0 && usable.h > 0) {
-            int room = usable.h - 40; /* title bar */
-            if (HEIGHT > room)
-                scale = (double)room / HEIGHT;
-        }
-    }
-
+    /* Fixed window size: window_scale DMD pixels per screen point. The
+     * user cannot resize it, so the pixels always stay square and sharp. */
     sdl_window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                  (int)(WIDTH * scale), (int)(HEIGHT * scale),
-                                  SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
-                                      SDL_WINDOW_ALLOW_HIGHDPI);
+                                  WIDTH * window_scale, HEIGHT * window_scale,
+                                  SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (!sdl_window) {
         LERR("Error creating window: %s", SDL_GetError());
@@ -770,9 +758,9 @@ int main(int argc, char **argv) {
         case OPT_BRIDGE:
             return mcp_bridge_main();
         case OPT_SCALE:
-            window_scale = atof(optarg);
-            if (window_scale < 0.25 || window_scale > 8) {
-                fprintf(stderr, "--scale must be between 0.25 and 8\n");
+            window_scale = atoi(optarg);
+            if (strlen(optarg) != 1 || window_scale < 1 || window_scale > 4) {
+                fprintf(stderr, "--scale must be 1, 2, 3 or 4\n");
                 return 1;
             }
             break;

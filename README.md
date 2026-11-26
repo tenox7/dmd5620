@@ -58,7 +58,7 @@ Other options:
 | `-f VER`, `--firmware` | Firmware `"8;7;3"` or `"8;7;5"` (default) |
 | `-n FILE`, `--nvram` | Keep the terminal's settings (its NVRAM) in FILE. Without a file, the terminal starts with the firmware's defaults, but at 19200 baud |
 | `-i`, `--inherit` | Give the shell your whole environment, not a small clean one |
-| `--scale N` | Window size; 1 is 800x1024, pixel for pixel (default). Whole numbers stay sharp |
+| `--scale N` | Window size 1, 2, 3 or 4; 1 is 800x1024, pixel for pixel (default). The window has a fixed size |
 | `--headless` | No window. MCP still sees the screen |
 | `--name NAME` | Name of this terminal in the MCP tools |
 | `--no-mcp` | No MCP control socket |
